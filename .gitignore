@@ -33,3 +33,6 @@ proj_details/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Generated mocks (regenerate with: make mocks)
+internal/db/mocks/

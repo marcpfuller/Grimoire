@@ -168,6 +168,47 @@ func TestMarkCommandSynced(t *testing.T) {
 	})
 }
 
+func TestListCommandsByPane(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-B", 1000))
+
+	cmds := []*db.Command{
+		{ShortID: "lp00001", PaneID: "pane-A", Command: "whoami", StartedAt: 1000},
+		{ShortID: "lp00002", PaneID: "pane-A", Command: "id", StartedAt: 2000},
+		{ShortID: "lp00003", PaneID: "pane-B", Command: "hostname", StartedAt: 3000},
+	}
+	for _, cmd := range cmds {
+		require.NoError(t, s.CreateCommand(ctx, cmd))
+	}
+
+	t.Run("returns_commands_in_seq_order", func(t *testing.T) {
+		got, err := s.ListCommandsByPane(ctx, "pane-A")
+		require.NoError(t, err)
+		require.Len(t, got, 2)
+		assert.Equal(t, "whoami", got[0].Command)
+		assert.Equal(t, "id", got[1].Command)
+		assert.Equal(t, int64(1), got[0].Seq)
+		assert.Equal(t, int64(2), got[1].Seq)
+	})
+
+	t.Run("excludes_other_panes", func(t *testing.T) {
+		got, err := s.ListCommandsByPane(ctx, "pane-B")
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		assert.Equal(t, "hostname", got[0].Command)
+	})
+
+	t.Run("empty_pane_returns_nil_slice", func(t *testing.T) {
+		require.NoError(t, s.CreatePane(ctx, "pane-empty", 1000))
+		got, err := s.ListCommandsByPane(ctx, "pane-empty")
+		require.NoError(t, err)
+		assert.Empty(t, got)
+	})
+}
+
 func TestListUnsynced(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
