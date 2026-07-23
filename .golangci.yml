@@ -1,0 +1,21 @@
+version: "2"
+
+linters:
+  enable:
+    - dupl
+    - errorlint
+    - gosec
+    - govet
+    - sqlclosecheck
+    - staticcheck
+    - testifylint
+    - unused
+  settings:
+    errcheck:
+      # Ignore error returns assigned to the blank identifier.
+      check-blank: false
+    dupl:
+      threshold: 150
+
+
+

@@ -1,0 +1,17 @@
+# Grimoire default configuration
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+ghostwriter:
+  url: ""
+  token: ""
+  oplog_id: 0
+
+scrub:
+  rules: []
+  # Example rule:
+  # - name: "AWS Access Key"
+  #   pattern: "AKIA[0-9A-Z]{16}"
+  #   replacement: "[REDACTED_AWS_KEY]"
