@@ -2,21 +2,20 @@ version: "2"
 
 linters:
   enable:
-    - errcheck
+    - dupl
+    - errorlint
+    - gosec
     - govet
+    - sqlclosecheck
     - staticcheck
+    - testifylint
     - unused
-    - gosimple
-    - ineffassign
-    - typecheck
+  settings:
+    errcheck:
+      # Ignore error returns assigned to the blank identifier.
+      check-blank: false
+    dupl:
+      threshold: 150
 
-linters-settings:
-  errcheck:
-    # Ignore error returns from Close calls assigned to blank identifier.
-    check-blank: false
 
-issues:
-  exclude-rules:
-    # Rollback errors in deferred calls are intentionally ignored.
-    - text: "Error return value of `.*\\.Rollback` is not checked"
-      linters: [errcheck]
+

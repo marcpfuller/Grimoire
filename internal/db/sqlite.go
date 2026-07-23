@@ -147,29 +147,39 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 	return cmd, nil
 }
 
-func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) ([]*Command, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cmds []*Command, err error) {
+	rows, qErr := s.db.QueryContext(ctx,
 		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, synced_gw
 		 FROM commands WHERE pane_id = ? ORDER BY seq`,
 		paneID,
 	)
-	if err != nil {
-		return nil, err
+	if qErr != nil {
+		return nil, qErr
 	}
-	defer rows.Close()
-	return scanCommands(rows)
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+	cmds, err = scanCommands(rows)
+	return
 }
 
-func (s *sqliteStore) ListUnsynced(ctx context.Context) ([]*Command, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err error) {
+	rows, qErr := s.db.QueryContext(ctx,
 		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, synced_gw
 		 FROM commands WHERE synced_gw = 0 AND ended_at IS NOT NULL ORDER BY id`,
 	)
-	if err != nil {
-		return nil, err
+	if qErr != nil {
+		return nil, qErr
 	}
-	defer rows.Close()
-	return scanCommands(rows)
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+	cmds, err = scanCommands(rows)
+	return
 }
 
 func (s *sqliteStore) FinalizeCommand(ctx context.Context, shortID string, endedAt int64) error {
@@ -224,26 +234,30 @@ func (s *sqliteStore) AppendOutputChunk(ctx context.Context, chunk *OutputChunk)
 	return nil
 }
 
-func (s *sqliteStore) GetOutputChunks(ctx context.Context, commandID int64) ([]*OutputChunk, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (s *sqliteStore) GetOutputChunks(ctx context.Context, commandID int64) (chunks []*OutputChunk, err error) {
+	rows, qErr := s.db.QueryContext(ctx,
 		`SELECT id, command_id, offset_ms, data
 		 FROM output_chunks WHERE command_id = ? ORDER BY offset_ms`,
 		commandID,
 	)
-	if err != nil {
-		return nil, err
+	if qErr != nil {
+		return nil, qErr
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
-	var chunks []*OutputChunk
 	for rows.Next() {
 		c := &OutputChunk{}
-		if err := rows.Scan(&c.ID, &c.CommandID, &c.OffsetMs, &c.Data); err != nil {
+		if err = rows.Scan(&c.ID, &c.CommandID, &c.OffsetMs, &c.Data); err != nil {
 			return nil, err
 		}
 		chunks = append(chunks, c)
 	}
-	return chunks, rows.Err()
+	err = rows.Err()
+	return
 }
 
 // --- Tags ---
@@ -256,25 +270,29 @@ func (s *sqliteStore) AddTag(ctx context.Context, commandID int64, label string,
 	return err
 }
 
-func (s *sqliteStore) GetTagsByCommand(ctx context.Context, commandID int64) ([]*Tag, error) {
-	rows, err := s.db.QueryContext(ctx,
+func (s *sqliteStore) GetTagsByCommand(ctx context.Context, commandID int64) (tags []*Tag, err error) {
+	rows, qErr := s.db.QueryContext(ctx,
 		`SELECT id, command_id, label, created_at FROM tags WHERE command_id = ? ORDER BY created_at`,
 		commandID,
 	)
-	if err != nil {
-		return nil, err
+	if qErr != nil {
+		return nil, qErr
 	}
-	defer rows.Close()
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
 
-	var tags []*Tag
 	for rows.Next() {
 		t := &Tag{}
-		if err := rows.Scan(&t.ID, &t.CommandID, &t.Label, &t.CreatedAt); err != nil {
+		if err = rows.Scan(&t.ID, &t.CommandID, &t.Label, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		tags = append(tags, t)
 	}
-	return tags, rows.Err()
+	err = rows.Err()
+	return
 }
 
 // --- Helpers ---

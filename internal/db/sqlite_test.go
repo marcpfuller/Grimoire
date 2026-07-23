@@ -15,7 +15,7 @@ func openTestStore(t *testing.T) db.Store {
 	t.Helper()
 	s, err := db.Open(":memory:")
 	require.NoError(t, err, "open test store")
-	t.Cleanup(func() { s.Close() })
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
