@@ -21,7 +21,7 @@ type Command struct {
 	ID        int64
 	ShortID   string // 7-hex operator tag, e.g. "a1b2c3d"
 	PaneID    string
-	Seq       int64  // sequential position within the pane
+	Seq       int64 // sequential position within the pane
 	Command   string
 	StartedAt int64  // Unix ms
 	EndedAt   *int64 // Unix ms; nil until the next precmd fires
