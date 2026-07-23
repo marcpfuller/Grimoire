@@ -1,0 +1,22 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - typecheck
+
+linters-settings:
+  errcheck:
+    # Ignore error returns from Close calls assigned to blank identifier.
+    check-blank: false
+
+issues:
+  exclude-rules:
+    # Rollback errors in deferred calls are intentionally ignored.
+    - text: "Error return value of `.*\\.Rollback` is not checked"
+      linters: [errcheck]
