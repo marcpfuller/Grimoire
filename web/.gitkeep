@@ -1,0 +1,2 @@
+# web frontend build output lands here (embedded into binary)
+# Run: cd web && npm run build
