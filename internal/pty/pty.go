@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -33,15 +34,17 @@ var oscMarker = []byte("\x1b]133;C\x1b\\")
 // to allow concurrent reads without contention.
 type captureState struct {
 	mu        sync.RWMutex
-	commandID int64 // 0 means Idle; non-zero means Capturing
-	startedAt int64 // Unix ms, set alongside commandID
+	commandID int64  // 0 means Idle; non-zero means Capturing
+	startedAt int64  // Unix ms, set alongside commandID
+	shortID   string // 7-hex short identifier for the active command
 }
 
-func (s *captureState) activate(commandID, startedAt int64) {
+func (s *captureState) activate(commandID, startedAt int64, shortID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.commandID = commandID
 	s.startedAt = startedAt
+	s.shortID = shortID
 }
 
 func (s *captureState) deactivate() {
@@ -49,12 +52,13 @@ func (s *captureState) deactivate() {
 	defer s.mu.Unlock()
 	s.commandID = 0
 	s.startedAt = 0
+	s.shortID = ""
 }
 
-func (s *captureState) snapshot() (commandID, startedAt int64) {
+func (s *captureState) snapshot() (commandID, startedAt int64, shortID string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.commandID, s.startedAt
+	return s.commandID, s.startedAt, s.shortID
 }
 
 // Session wraps a single `grimoire shell` invocation. One Session is created
@@ -67,16 +71,27 @@ type Session struct {
 	// out receives every byte that flows through the PTY (both passthrough and
 	// captured). Defaults to os.Stdout; injectable for tests.
 	out io.Writer
+	// logger is pre-bound with pane_id. nil is safe — log calls are no-ops.
+	logger *slog.Logger
 }
 
 // New returns a Session that will spawn shell under a PTY and register paneID
 // in the store. Call Run to start the session.
-func New(store db.Store, paneID, shell string) *Session {
+//
+// logger should be pre-bound with daemon-level attributes via slog.With; New
+// further binds pane_id so every log line carries it automatically. Pass nil
+// to suppress logging (useful in tests).
+func New(store db.Store, paneID, shell string, logger *slog.Logger) *Session {
+	var log *slog.Logger
+	if logger != nil {
+		log = logger.With("pane_id", paneID)
+	}
 	return &Session{
 		paneID: paneID,
 		shell:  shell,
 		store:  store,
 		out:    os.Stdout,
+		logger: log,
 	}
 }
 
@@ -90,8 +105,8 @@ func (s *Session) PaneID() string { return s.paneID }
 // Why no race: the shell is blocked on the HTTP call (curl in preexec) so no
 // command output can appear in the PTY until this method returns and the HTTP
 // response is sent back to the shell.
-func (s *Session) Activate(commandID, startedAt int64) {
-	s.state.activate(commandID, startedAt)
+func (s *Session) Activate(commandID, startedAt int64, shortID string) {
+	s.state.activate(commandID, startedAt, shortID)
 }
 
 // Deactivate is called by the HTTP handler for POST /api/precmd once
@@ -163,7 +178,7 @@ func (s *Session) readLoop(ctx context.Context, r io.Reader) {
 		if n > 0 {
 			// Single snapshot per read: routing and storage use the same
 			// commandID, eliminating a TOCTOU race between the two decisions.
-			cmdID, startedAt := s.state.snapshot()
+			cmdID, startedAt, shortID := s.state.snapshot()
 			chunk := buf[:n]
 			passthrough, captured := splitOnMarker(chunk, cmdID)
 
@@ -172,13 +187,13 @@ func (s *Session) readLoop(ctx context.Context, r io.Reader) {
 				// When Capturing, bytes before a mid-buffer marker are the
 				// tail of the current command's output; store them too.
 				if cmdID != 0 {
-					s.storeChunk(ctx, passthrough, cmdID, startedAt)
+					s.storeChunk(ctx, passthrough, cmdID, startedAt, shortID)
 				}
 			}
 			if len(captured) > 0 {
 				_, _ = s.out.Write(captured)
 				if cmdID != 0 {
-					s.storeChunk(ctx, captured, cmdID, startedAt)
+					s.storeChunk(ctx, captured, cmdID, startedAt, shortID)
 				}
 			}
 		}
@@ -218,10 +233,9 @@ func splitOnMarker(buf []byte, cmdID int64) (passthrough, captured []byte) {
 }
 
 // storeChunk persists buf as an output_chunk under cmdID. The caller is
-// responsible for ensuring cmdID != 0. Store failure is non-fatal: the
-// operator still sees output via out; errors will surface via the daemon
-// logger once one is wired.
-func (s *Session) storeChunk(ctx context.Context, buf []byte, cmdID, startedAt int64) {
+// responsible for ensuring cmdID != 0. Store failure is logged at WARN
+// (non-fatal: the operator still sees output via out).
+func (s *Session) storeChunk(ctx context.Context, buf []byte, cmdID, startedAt int64, shortID string) {
 	nowMs := time.Now().UnixMilli()
 	offsetMs := nowMs - startedAt
 	if offsetMs < 0 {
@@ -236,5 +250,11 @@ func (s *Session) storeChunk(ctx context.Context, buf []byte, cmdID, startedAt i
 		OffsetMs:  offsetMs,
 		Data:      data,
 	}
-	_ = s.store.AppendOutputChunk(ctx, chunk)
+	if err := s.store.AppendOutputChunk(ctx, chunk); err != nil && s.logger != nil {
+		s.logger.Warn("output chunk dropped",
+			"short_id", shortID,
+			"cmd_id", cmdID,
+			"err", err,
+		)
+	}
 }
