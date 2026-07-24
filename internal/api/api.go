@@ -3,9 +3,10 @@
 //
 // Endpoints:
 //
-//	GET  /api/next-id   shell precmd reserves the short ID for the next command
-//	POST /api/execute   shell preexec records a command start and activates PTY capture
-//	POST /api/precmd    shell precmd records a command end and deactivates PTY capture
+//	GET  /api/next-id    shell precmd reserves the short ID for the next command
+//	POST /api/execute    shell preexec records a command start and activates PTY capture
+//	POST /api/precmd     shell precmd records a command end and deactivates PTY capture
+//	POST /api/deregister shell exit removes the pane's pending reservation and session
 package api
 
 import (
@@ -27,11 +28,13 @@ type PtySession interface {
 	Deactivate()
 }
 
-// SessionRegistry provides read-only access to live PTY sessions by pane ID.
+// SessionRegistry manages the daemon's live PTY sessions by pane ID.
 // Implemented by the daemon's session manager in main.go using a
 // sync.RWMutex-protected map.
 type SessionRegistry interface {
 	Lookup(paneID string) (PtySession, bool)
+	// Remove unregisters paneID. It is a no-op if paneID is not present.
+	Remove(paneID string)
 }
 
 // Server holds the shared dependencies for all HTTP handlers.
@@ -58,6 +61,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/next-id", s.handleNextID)
 	mux.HandleFunc("POST /api/execute", s.handleExecute)
 	mux.HandleFunc("POST /api/precmd", s.handlePrecmd)
+	mux.HandleFunc("POST /api/deregister", s.handleDeregister)
 	return mux
 }
 
@@ -83,6 +87,10 @@ type precmdRequest struct {
 	ShortID  string `json:"short_id"`
 	EndedAt  *int64 `json:"ended_at"`
 	ExitCode int    `json:"exit_code"`
+}
+
+type deregisterRequest struct {
+	PaneID string `json:"pane_id"`
 }
 
 type errorResponse struct {
@@ -197,6 +205,39 @@ func (s *Server) handlePrecmd(w http.ResponseWriter, r *http.Request) {
 		s.logWarn("precmd: FinalizeCommand failed", "short_id", req.ShortID, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to finalize command")
 		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeregister handles POST /api/deregister.
+// Called by the shell on exit to clear the pending short ID reservation and
+// remove the PTY session from the in-memory registry.
+// If DeregisterPane fails, a 500 is returned and the session is preserved.
+// On success the session is deactivated and evicted so the daemon does not
+// hold a stale entry.
+func (s *Server) handleDeregister(w http.ResponseWriter, r *http.Request) {
+	var req deregisterRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.PaneID == "" {
+		writeError(w, http.StatusBadRequest, "pane_id is required")
+		return
+	}
+
+	if err := s.store.DeregisterPane(r.Context(), req.PaneID); err != nil {
+		s.logWarn("deregister: DeregisterPane failed", "pane_id", req.PaneID, "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to deregister pane")
+		return
+	}
+
+	// Deactivate and evict the session. No-op if the shell exited before any
+	// command was captured or the session was never registered.
+	if sess, ok := s.sessions.Lookup(req.PaneID); ok {
+		sess.Deactivate()
+		s.sessions.Remove(req.PaneID)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
