@@ -14,7 +14,8 @@ var (
 // Pane represents a terminal pane session anchored by GRIMOIRE_PANE_ID.
 type Pane struct {
 	ID        string
-	CreatedAt int64 // Unix ms
+	ProjectID string // Ghostwriter project ID this pane belongs to
+	CreatedAt int64  // Unix ms
 }
 
 // Command represents a single executed command within a pane.
@@ -22,7 +23,8 @@ type Command struct {
 	ID        int64
 	ShortID   string // 7-hex operator tag, e.g. "a1b2c3d"
 	PaneID    string
-	Seq       int64 // sequential position within the pane
+	ProjectID string // Ghostwriter project ID, denormalised from panes
+	Seq       int64  // sequential position within the pane
 	Command   string
 	StartedAt int64  // Unix ms
 	EndedAt   *int64 // Unix ms; nil until FinalizeCommand is called
@@ -50,11 +52,16 @@ type Tag struct {
 // through this interface so implementations can be swapped or mocked in tests.
 type Store interface {
 	// Panes
-	// UpsertPane registers paneID, or silently succeeds if it is already
-	// registered. This makes re-registration safe when the daemon restarts
-	// mid-session and the shell still holds its original GRIMOIRE_PANE_ID.
-	UpsertPane(ctx context.Context, paneID string, createdAt int64) error
-	CreatePane(ctx context.Context, paneID string, createdAt int64) error
+	// UpsertPane registers paneID with its Ghostwriter projectID, or silently
+	// succeeds if already registered. This makes re-registration safe when the
+	// daemon restarts mid-session and the shell still holds its original
+	// GRIMOIRE_PANE_ID.
+	UpsertPane(ctx context.Context, paneID string, projectID string, createdAt int64) error
+	CreatePane(ctx context.Context, paneID string, projectID string, createdAt int64) error
+	// DeregisterPane removes the pending short ID reservation for paneID so
+	// the ID is immediately available to other panes. The pane row and all
+	// its commands are retained for historical purposes.
+	DeregisterPane(ctx context.Context, paneID string) error
 
 	// Commands
 	// ReserveShortID atomically claims shortID for paneID in the
