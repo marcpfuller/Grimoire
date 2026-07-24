@@ -17,26 +17,29 @@ import (
 func TestCaptureState(t *testing.T) {
 	t.Run("idle_by_default", func(t *testing.T) {
 		var s captureState
-		cmdID, startedAt := s.snapshot()
+		cmdID, startedAt, shortID := s.snapshot()
 		assert.Zero(t, cmdID)
 		assert.Zero(t, startedAt)
+		assert.Empty(t, shortID)
 	})
 
 	t.Run("activate_and_snapshot", func(t *testing.T) {
 		var s captureState
-		s.activate(42, 1000)
-		cmdID, startedAt := s.snapshot()
+		s.activate(42, 1000, "abc1234")
+		cmdID, startedAt, shortID := s.snapshot()
 		assert.Equal(t, int64(42), cmdID)
 		assert.Equal(t, int64(1000), startedAt)
+		assert.Equal(t, "abc1234", shortID)
 	})
 
 	t.Run("deactivate_clears_state", func(t *testing.T) {
 		var s captureState
-		s.activate(42, 1000)
+		s.activate(42, 1000, "abc1234")
 		s.deactivate()
-		cmdID, startedAt := s.snapshot()
+		cmdID, startedAt, shortID := s.snapshot()
 		assert.Zero(t, cmdID)
 		assert.Zero(t, startedAt)
+		assert.Empty(t, shortID)
 	})
 
 	t.Run("concurrent_activate_and_snapshot", func(t *testing.T) {
@@ -51,19 +54,19 @@ func TestCaptureState(t *testing.T) {
 		for i := range readers {
 			go func(i int) {
 				<-ready
-				_, _ = s.snapshot()
+				_, _, _ = s.snapshot()
 				done <- struct{}{}
 			}(i)
 		}
 
 		close(ready) // release all readers simultaneously
-		s.activate(99, 1000)
+		s.activate(99, 1000, "test001")
 		s.deactivate()
 
 		for range readers {
 			<-done
 		}
-		cmdID, _ := s.snapshot()
+		cmdID, _, _ := s.snapshot()
 		assert.Zero(t, cmdID)
 	})
 }
@@ -145,7 +148,7 @@ func TestStoreChunk(t *testing.T) {
 		startedAt := time.Now().UnixMilli()
 		sess := &Session{store: ms}
 
-		sess.storeChunk(context.Background(), []byte("hello"), 99, startedAt)
+		sess.storeChunk(context.Background(), []byte("hello"), 99, startedAt, "abc1234")
 
 		require.Len(t, ms.chunks, 1)
 		assert.Equal(t, int64(99), ms.chunks[0].CommandID)
@@ -158,7 +161,7 @@ func TestStoreChunk(t *testing.T) {
 		futureStart := time.Now().UnixMilli() + 9999 // startedAt in the future
 		sess := &Session{store: ms}
 
-		sess.storeChunk(context.Background(), []byte("data"), 1, futureStart)
+		sess.storeChunk(context.Background(), []byte("data"), 1, futureStart, "abc1234")
 
 		require.Len(t, ms.chunks, 1)
 		assert.Zero(t, ms.chunks[0].OffsetMs, "offset_ms must not be negative")
@@ -170,7 +173,7 @@ func TestStoreChunk(t *testing.T) {
 		startedAt := time.Now().UnixMilli()
 
 		buf := []byte("original")
-		sess.storeChunk(context.Background(), buf, 1, startedAt)
+		sess.storeChunk(context.Background(), buf, 1, startedAt, "abc1234")
 		buf[0] = 'X' // mutate original
 
 		require.Len(t, ms.chunks, 1)
@@ -196,7 +199,7 @@ func TestReadLoop(t *testing.T) {
 		ms := &mockStore{}
 		var out bytes.Buffer
 		sess := &Session{store: ms, out: &out}
-		sess.state.activate(5, time.Now().UnixMilli())
+		sess.state.activate(5, time.Now().UnixMilli(), "abc1234")
 
 		sess.readLoop(context.Background(), bytes.NewReader([]byte("command output bytes")))
 
@@ -231,7 +234,7 @@ func TestReadLoop(t *testing.T) {
 		ms := &mockStore{}
 		var out bytes.Buffer
 		sess := &Session{store: ms, out: &out}
-		sess.state.activate(5, time.Now().UnixMilli())
+		sess.state.activate(5, time.Now().UnixMilli(), "abc1234")
 
 		payload := append(append([]byte("tail of cmd"), oscMarker...), []byte("start of next")...)
 		sess.readLoop(context.Background(), bytes.NewReader(payload))

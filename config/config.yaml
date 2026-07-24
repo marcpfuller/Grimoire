@@ -15,3 +15,14 @@ scrub:
   # - name: "AWS Access Key"
   #   pattern: "AKIA[0-9A-Z]{16}"
   #   replacement: "[REDACTED_AWS_KEY]"
+
+log:
+  # Directory where grimoire.log is written. Relative paths resolve from the
+  # daemon's working directory. Use an absolute path for predictability.
+  dir: "."
+  # Minimum level for the JSON file sink: debug | info | warn | error
+  level: "info"
+  # Maximum log file size in MB before rotation.
+  max_mb: 50
+  # Number of rotated backup files to keep.
+  max_backups: 5
