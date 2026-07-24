@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS commands (
     command    TEXT    NOT NULL,
     started_at INTEGER NOT NULL,
     ended_at   INTEGER,
+    exit_code  INTEGER,
     synced_gw  INTEGER NOT NULL DEFAULT 0,
     UNIQUE(pane_id, seq)
 );
@@ -40,6 +41,16 @@ CREATE TABLE IF NOT EXISTS tags (
     label      TEXT    NOT NULL,
     created_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pending_commands (
+    pane_id  TEXT PRIMARY KEY REFERENCES panes(id),
+    short_id TEXT NOT NULL UNIQUE
+);
+-- One row per active pane. If the shell exits abnormally (e.g. SIGKILL) before
+-- preexec fires, this row is never consumed by CreateCommand and remains until
+-- the next ReserveShortID call for the same pane UPSERT-overwrites it. This is
+-- intentional: the leak is bounded to one row per pane and self-heals on the
+-- next prompt draw.
 
 CREATE INDEX IF NOT EXISTS idx_commands_pane_seq     ON commands(pane_id, seq);
 CREATE INDEX IF NOT EXISTS idx_chunks_command_offset ON output_chunks(command_id, offset_ms);
@@ -85,6 +96,17 @@ func (s *sqliteStore) Close() error {
 
 // --- Panes ---
 
+// UpsertPane registers paneID, or silently succeeds if already registered.
+// Safe to call on daemon restart when the shell still holds its original
+// GRIMOIRE_PANE_ID.
+func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, createdAt int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO panes (id, created_at) VALUES (?, ?)`,
+		paneID, createdAt,
+	)
+	return err
+}
+
 func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, createdAt int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO panes (id, created_at) VALUES (?, ?)`,
@@ -95,9 +117,65 @@ func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, createdAt i
 
 // --- Commands ---
 
-// CreateCommand inserts a new command record. The sequence number is derived
-// atomically inside the transaction so concurrent panes never collide.
-// cmd.ID and cmd.Seq are populated on success.
+// ReserveShortID atomically claims shortID for paneID in pending_commands.
+// The same pane may call this repeatedly to refresh its reservation; the
+// UPSERT overwrites any previously restored reservation (see CreateCommand
+// rollback note below), which is intentional — the old ID is abandoned
+// cleanly because it was never inserted into commands.
+// Returns ErrConflict if shortID is already in use in commands or pending_commands.
+func (s *sqliteStore) ReserveShortID(ctx context.Context, paneID string, shortID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("db: begin tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	// Reject if already permanently claimed.
+	var inCommands int
+	if err = tx.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM commands WHERE short_id = ?`, shortID,
+	).Scan(&inCommands); err != nil {
+		return fmt.Errorf("db: check commands: %w", err)
+	}
+	if inCommands > 0 {
+		return ErrConflict
+	}
+
+	// Reject if already reserved by a different pane.
+	var inPending int
+	if err = tx.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM pending_commands WHERE short_id = ? AND pane_id != ?`,
+		shortID, paneID,
+	).Scan(&inPending); err != nil {
+		return fmt.Errorf("db: check pending: %w", err)
+	}
+	if inPending > 0 {
+		return ErrConflict
+	}
+
+	// UPSERT: same pane refreshes its reservation; new pane gets a fresh one.
+	if _, err = tx.ExecContext(ctx,
+		`INSERT INTO pending_commands (pane_id, short_id) VALUES (?, ?)
+		 ON CONFLICT(pane_id) DO UPDATE SET short_id = excluded.short_id`,
+		paneID, shortID,
+	); err != nil {
+		return fmt.Errorf("db: reserve: %w", err)
+	}
+	return tx.Commit()
+}
+
+// CreateCommand claims the pending reservation for cmd.PaneID, assigns the
+// next sequence number, and inserts the row. cmd.ID, cmd.Seq, and cmd.ShortID
+// are populated on success. Any ShortID value on the input struct is ignored.
+//
+// Rollback semantics: the DELETE of pending_commands is inside this
+// transaction. If the transaction rolls back for any reason (context
+// cancellation, constraint violation, etc.), the reservation is restored
+// atomically — the short_id shown in the prompt is still the active
+// reservation and a retry will succeed. If the shell hook instead calls
+// GET /api/next-id after a failure, ReserveShortID's UPSERT overwrites the
+// restored reservation with the new ID; the old short_id is silently
+// abandoned. This is safe because it was never committed to commands.
 func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -105,10 +183,26 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
+	// Claim the reservation atomically.
+	var shortID string
+	if err = tx.QueryRowContext(ctx,
+		`SELECT short_id FROM pending_commands WHERE pane_id = ?`, cmd.PaneID,
+	).Scan(&shortID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("db: no pending reservation for pane %s: %w", cmd.PaneID, ErrNotFound)
+		}
+		return fmt.Errorf("db: claim reservation: %w", err)
+	}
+
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM pending_commands WHERE pane_id = ?`, cmd.PaneID,
+	); err != nil {
+		return fmt.Errorf("db: delete reservation: %w", err)
+	}
+
 	var seq int64
 	if err = tx.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(seq), 0) + 1 FROM commands WHERE pane_id = ?`,
-		cmd.PaneID,
+		`SELECT COALESCE(MAX(seq), 0) + 1 FROM commands WHERE pane_id = ?`, cmd.PaneID,
 	).Scan(&seq); err != nil {
 		return fmt.Errorf("db: next seq: %w", err)
 	}
@@ -116,7 +210,7 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO commands (short_id, pane_id, seq, command, started_at)
 		 VALUES (?, ?, ?, ?, ?)`,
-		cmd.ShortID, cmd.PaneID, seq, cmd.Command, cmd.StartedAt,
+		shortID, cmd.PaneID, seq, cmd.Command, cmd.StartedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("db: insert command: %w", err)
@@ -124,6 +218,7 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 
 	cmd.ID, _ = res.LastInsertId()
 	cmd.Seq = seq
+	cmd.ShortID = shortID
 
 	return tx.Commit()
 }
@@ -132,11 +227,11 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 	cmd := &Command{}
 	var syncedGW int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, synced_gw
+		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, exit_code, synced_gw
 		 FROM commands WHERE short_id = ?`,
 		shortID,
 	).Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.Seq, &cmd.Command,
-		&cmd.StartedAt, &cmd.EndedAt, &syncedGW)
+		&cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -149,7 +244,7 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 
 func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, synced_gw
+		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, exit_code, synced_gw
 		 FROM commands WHERE pane_id = ? ORDER BY seq`,
 		paneID,
 	)
@@ -167,7 +262,7 @@ func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cm
 
 func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, synced_gw
+		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, exit_code, synced_gw
 		 FROM commands WHERE synced_gw = 0 AND ended_at IS NOT NULL ORDER BY id`,
 	)
 	if qErr != nil {
@@ -182,10 +277,10 @@ func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err er
 	return
 }
 
-func (s *sqliteStore) FinalizeCommand(ctx context.Context, shortID string, endedAt int64) error {
+func (s *sqliteStore) FinalizeCommand(ctx context.Context, shortID string, endedAt int64, exitCode int) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE commands SET ended_at = ? WHERE short_id = ?`,
-		endedAt, shortID,
+		`UPDATE commands SET ended_at = ?, exit_code = ? WHERE short_id = ?`,
+		endedAt, exitCode, shortID,
 	)
 	if err != nil {
 		return err
@@ -212,10 +307,16 @@ func (s *sqliteStore) MarkCommandSynced(ctx context.Context, commandID int64) er
 	return nil
 }
 
+// ShortIDExists reports whether shortID is already in use in either the
+// commands table (permanently claimed) or pending_commands (reserved).
 func (s *sqliteStore) ShortIDExists(ctx context.Context, shortID string) (bool, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(1) FROM commands WHERE short_id = ?`, shortID,
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(1) FROM (
+			SELECT 1 FROM commands        WHERE short_id = ?
+			UNION ALL
+			SELECT 1 FROM pending_commands WHERE short_id = ?
+		)`, shortID, shortID,
 	).Scan(&count)
 	return count > 0, err
 }
@@ -303,7 +404,7 @@ func scanCommands(rows *sql.Rows) ([]*Command, error) {
 		cmd := &Command{}
 		var syncedGW int64
 		if err := rows.Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.Seq,
-			&cmd.Command, &cmd.StartedAt, &cmd.EndedAt, &syncedGW); err != nil {
+			&cmd.Command, &cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW); err != nil {
 			return nil, err
 		}
 		cmd.SyncedGW = syncedGW != 0
