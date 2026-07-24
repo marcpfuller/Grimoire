@@ -18,6 +18,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Generate mocks
+        run: go tool mockery
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
