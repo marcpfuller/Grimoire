@@ -25,10 +25,10 @@ func TestCreatePane(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-001", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-001", "proj-gw1", 1000))
 
 	// Duplicate should fail (PRIMARY KEY constraint).
-	assert.Error(t, s.CreatePane(ctx, "pane-001", 2000), "expected error on duplicate pane id")
+	assert.Error(t, s.CreatePane(ctx, "pane-001", "proj-gw1", 2000), "expected error on duplicate pane id")
 }
 
 func TestUpsertPane(t *testing.T) {
@@ -36,10 +36,10 @@ func TestUpsertPane(t *testing.T) {
 	ctx := context.Background()
 
 	// First call creates the row.
-	require.NoError(t, s.UpsertPane(ctx, "pane-001", 1000))
+	require.NoError(t, s.UpsertPane(ctx, "pane-001", "proj-gw1", 1000))
 
 	// Second call (daemon restart scenario) must not error.
-	require.NoError(t, s.UpsertPane(ctx, "pane-001", 2000), "upsert on existing pane must succeed")
+	require.NoError(t, s.UpsertPane(ctx, "pane-001", "proj-gw1", 2000), "upsert on existing pane must succeed")
 }
 
 // --- Commands ---
@@ -48,7 +48,7 @@ func TestCreateCommand(t *testing.T) {
 	t.Run("sequence_increments", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 
 		cases := []struct {
 			shortID string
@@ -74,7 +74,7 @@ func TestCreateCommand(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 		for _, pane := range []string{"pane-X", "pane-Y"} {
-			require.NoError(t, s.CreatePane(ctx, pane, 1000))
+			require.NoError(t, s.CreatePane(ctx, pane, "proj-gw1", 1000))
 		}
 
 		require.NoError(t, s.ReserveShortID(ctx, "pane-X", "xxx0001"))
@@ -93,7 +93,7 @@ func TestCreateCommand(t *testing.T) {
 	t.Run("duplicate_short_id", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 
 		// Reserve, create — short_id is now permanently in commands.
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "dup0001"))
@@ -106,7 +106,7 @@ func TestCreateCommand(t *testing.T) {
 	t.Run("no_reservation_returns_not_found", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 
 		// CreateCommand without a prior ReserveShortID must fail.
 		err := s.CreateCommand(ctx, &db.Command{PaneID: "pane-A", Command: "ls", StartedAt: 1000})
@@ -127,7 +127,7 @@ func TestGetCommandByShortID(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "abc1234"))
 	cmd := &db.Command{PaneID: "pane-A", Command: "uname -a", StartedAt: 5000}
 	require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -149,7 +149,7 @@ func TestFinalizeCommand(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "fin0001"))
 	cmd := &db.Command{PaneID: "pane-A", Command: "sleep 1", StartedAt: 1000}
 	require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -175,7 +175,7 @@ func TestMarkCommandSynced(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "syn0001"))
 	cmd := &db.Command{PaneID: "pane-A", Command: "id", StartedAt: 1000}
 	require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -198,8 +198,8 @@ func TestListCommandsByPane(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
-	require.NoError(t, s.CreatePane(ctx, "pane-B", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-B", "proj-gw1", 1000))
 
 	cmds := []*db.Command{
 		{PaneID: "pane-A", Command: "whoami", StartedAt: 1000},
@@ -234,7 +234,7 @@ func TestListCommandsByPane(t *testing.T) {
 	})
 
 	t.Run("empty_pane_returns_nil_slice", func(t *testing.T) {
-		require.NoError(t, s.CreatePane(ctx, "pane-empty", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-empty", "proj-gw1", 1000))
 		got, err := s.ListCommandsByPane(ctx, "pane-empty")
 		require.NoError(t, err)
 		assert.Empty(t, got)
@@ -245,7 +245,7 @@ func TestListUnsynced(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 
 	// cmd1: finalized, unsynced — should appear.
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "u000001"))
@@ -275,7 +275,7 @@ func TestShortIDExists(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 
 	// "exists1" permanently in commands.
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "exists1"))
@@ -299,13 +299,51 @@ func TestShortIDExists(t *testing.T) {
 	}
 }
 
+func TestDeregisterPane(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "dreg001"))
+
+	exists, err := s.ShortIDExists(ctx, "dreg001")
+	require.NoError(t, err)
+	assert.True(t, exists, "short_id should be reserved before deregister")
+
+	require.NoError(t, s.DeregisterPane(ctx, "pane-A"))
+
+	// Reservation is gone; the pane row itself must remain (historical record).
+	exists, err = s.ShortIDExists(ctx, "dreg001")
+	require.NoError(t, err)
+	assert.False(t, exists, "short_id should be unreserved after deregister")
+
+	// Calling DeregisterPane on a pane with no reservation must not error.
+	require.NoError(t, s.DeregisterPane(ctx, "pane-A"), "idempotent deregister")
+}
+
+func TestProjectIDPropagation(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-abc", 1000))
+	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "prj0001"))
+	cmd := &db.Command{PaneID: "pane-A", Command: "whoami", StartedAt: 1000}
+	require.NoError(t, s.CreateCommand(ctx, cmd))
+
+	assert.Equal(t, "proj-abc", cmd.ProjectID, "project_id should be propagated to in-memory struct")
+
+	got, err := s.GetCommandByShortID(ctx, "prj0001")
+	require.NoError(t, err)
+	assert.Equal(t, "proj-abc", got.ProjectID, "project_id should be stored and retrieved from DB")
+}
+
 // --- ReserveShortID ---
 
 func TestReserveShortID(t *testing.T) {
 	t.Run("conflict_with_committed_command", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "col0001"))
 		require.NoError(t, s.CreateCommand(ctx, &db.Command{PaneID: "pane-A", Command: "ls", StartedAt: 1000}))
@@ -318,7 +356,7 @@ func TestReserveShortID(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 		for _, p := range []string{"pane-A", "pane-B"} {
-			require.NoError(t, s.CreatePane(ctx, p, 1000))
+			require.NoError(t, s.CreatePane(ctx, p, "proj-gw1", 1000))
 		}
 
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "shared1"))
@@ -330,7 +368,7 @@ func TestReserveShortID(t *testing.T) {
 	t.Run("same_pane_can_refresh", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 
 		// First reservation.
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "old0001"))
@@ -357,7 +395,7 @@ func TestOutputChunks(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "out0001"))
 		cmd := &db.Command{PaneID: "pane-A", Command: "ls -la", StartedAt: 1000}
 		require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -391,7 +429,7 @@ func TestOutputChunks(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "emp0001"))
 		cmd := &db.Command{PaneID: "pane-A", Command: "ls", StartedAt: 1000}
 		require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -409,7 +447,7 @@ func TestTags(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.CreatePane(ctx, "pane-A", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "tag0001"))
 		cmd := &db.Command{PaneID: "pane-A", Command: "net view", StartedAt: 1000}
 		require.NoError(t, s.CreateCommand(ctx, cmd))

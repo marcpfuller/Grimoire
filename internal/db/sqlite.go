@@ -12,6 +12,7 @@ import (
 const schema = `
 CREATE TABLE IF NOT EXISTS panes (
     id         TEXT    PRIMARY KEY,
+    project_id TEXT    NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
 );
 
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS commands (
     id         INTEGER PRIMARY KEY,
     short_id   TEXT    NOT NULL UNIQUE,
     pane_id    TEXT    NOT NULL REFERENCES panes(id),
+    project_id TEXT    NOT NULL DEFAULT '',
     seq        INTEGER NOT NULL,
     command    TEXT    NOT NULL,
     started_at INTEGER NOT NULL,
@@ -96,21 +98,40 @@ func (s *sqliteStore) Close() error {
 
 // --- Panes ---
 
-// UpsertPane registers paneID, or silently succeeds if already registered.
-// Safe to call on daemon restart when the shell still holds its original
-// GRIMOIRE_PANE_ID.
-func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, createdAt int64) error {
+// UpsertPane registers paneID with its Ghostwriter projectID, or silently
+// succeeds if already registered. Safe to call on daemon restart when the
+// shell still holds its original GRIMOIRE_PANE_ID.
+//
+// INSERT OR IGNORE: if the pane is already registered (e.g. daemon restart),
+// the existing row — including its projectID — is preserved unchanged.
+// Project IDs are not expected to change mid-session.
+func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, projectID string, createdAt int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO panes (id, created_at) VALUES (?, ?)`,
-		paneID, createdAt,
+		`INSERT OR IGNORE INTO panes (id, project_id, created_at) VALUES (?, ?, ?)`,
+		paneID, projectID, createdAt,
 	)
 	return err
 }
 
-func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, createdAt int64) error {
+func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, projectID string, createdAt int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO panes (id, created_at) VALUES (?, ?)`,
-		paneID, createdAt,
+		`INSERT INTO panes (id, project_id, created_at) VALUES (?, ?, ?)`,
+		paneID, projectID, createdAt,
+	)
+	return err
+}
+
+// DeregisterPane removes the pending short ID reservation for paneID so the
+// reserved ID is immediately available to other panes. The pane row and all
+// its commands are retained for historical purposes.
+//
+// DELETE is a no-op if paneID has no pending reservation or does not exist;
+// both cases are valid — the shell may call this on abnormal exit before ever
+// reserving a short ID, and the silence is intentional.
+func (s *sqliteStore) DeregisterPane(ctx context.Context, paneID string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM pending_commands WHERE pane_id = ?`,
+		paneID,
 	)
 	return err
 }
@@ -200,6 +221,15 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 		return fmt.Errorf("db: delete reservation: %w", err)
 	}
 
+	// Propagate project_id from the owning pane to the command row so
+	// the sync layer can group commands by project without a JOIN.
+	var projectID string
+	if err = tx.QueryRowContext(ctx,
+		`SELECT project_id FROM panes WHERE id = ?`, cmd.PaneID,
+	).Scan(&projectID); err != nil {
+		return fmt.Errorf("db: get pane project_id: %w", err)
+	}
+
 	var seq int64
 	if err = tx.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(seq), 0) + 1 FROM commands WHERE pane_id = ?`, cmd.PaneID,
@@ -208,9 +238,9 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO commands (short_id, pane_id, seq, command, started_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		shortID, cmd.PaneID, seq, cmd.Command, cmd.StartedAt,
+		`INSERT INTO commands (short_id, pane_id, project_id, seq, command, started_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		shortID, cmd.PaneID, projectID, seq, cmd.Command, cmd.StartedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("db: insert command: %w", err)
@@ -219,6 +249,7 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 	cmd.ID, _ = res.LastInsertId()
 	cmd.Seq = seq
 	cmd.ShortID = shortID
+	cmd.ProjectID = projectID
 
 	return tx.Commit()
 }
@@ -227,10 +258,10 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 	cmd := &Command{}
 	var syncedGW int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, exit_code, synced_gw
+		`SELECT id, short_id, pane_id, project_id, seq, command, started_at, ended_at, exit_code, synced_gw
 		 FROM commands WHERE short_id = ?`,
 		shortID,
-	).Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.Seq, &cmd.Command,
+	).Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.ProjectID, &cmd.Seq, &cmd.Command,
 		&cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -244,7 +275,7 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 
 func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, exit_code, synced_gw
+		`SELECT id, short_id, pane_id, project_id, seq, command, started_at, ended_at, exit_code, synced_gw
 		 FROM commands WHERE pane_id = ? ORDER BY seq`,
 		paneID,
 	)
@@ -262,7 +293,7 @@ func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cm
 
 func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT id, short_id, pane_id, seq, command, started_at, ended_at, exit_code, synced_gw
+		`SELECT id, short_id, pane_id, project_id, seq, command, started_at, ended_at, exit_code, synced_gw
 		 FROM commands WHERE synced_gw = 0 AND ended_at IS NOT NULL ORDER BY id`,
 	)
 	if qErr != nil {
@@ -403,7 +434,7 @@ func scanCommands(rows *sql.Rows) ([]*Command, error) {
 	for rows.Next() {
 		cmd := &Command{}
 		var syncedGW int64
-		if err := rows.Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.Seq,
+		if err := rows.Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.ProjectID, &cmd.Seq,
 			&cmd.Command, &cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW); err != nil {
 			return nil, err
 		}

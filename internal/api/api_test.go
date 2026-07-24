@@ -40,6 +40,7 @@ func (m *mockSession) Deactivate() {
 
 type mockRegistry struct {
 	sessions map[string]*mockSession
+	removed  []string
 }
 
 func newRegistry(paneIDs ...string) *mockRegistry {
@@ -56,6 +57,11 @@ func (r *mockRegistry) Lookup(paneID string) (api.PtySession, bool) {
 		return nil, false
 	}
 	return s, true
+}
+
+func (r *mockRegistry) Remove(paneID string) {
+	r.removed = append(r.removed, paneID)
+	delete(r.sessions, paneID)
 }
 
 func (r *mockRegistry) session(paneID string) *mockSession {
@@ -378,6 +384,104 @@ func TestHandlePrecmd(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- POST /api/deregister ---
+
+func TestHandleDeregister(t *testing.T) {
+	tests := []struct {
+		name        string
+		body        any
+		setupStore  func(*dbmocks.MockStore)
+		setupReg    func() *mockRegistry
+		wantStatus  int
+		wantRemoved bool
+	}{
+		{
+			name:        "non_object_body",
+			body:        "not-json",
+			setupStore:  func(_ *dbmocks.MockStore) {},
+			setupReg:    func() *mockRegistry { return newRegistry() },
+			wantStatus:  http.StatusBadRequest,
+			wantRemoved: false,
+		},
+		{
+			name:        "missing_pane_id",
+			body:        map[string]any{},
+			setupStore:  func(_ *dbmocks.MockStore) {},
+			setupReg:    func() *mockRegistry { return newRegistry() },
+			wantStatus:  http.StatusBadRequest,
+			wantRemoved: false,
+		},
+		{
+			name: "store_fails",
+			body: map[string]any{"pane_id": "pane1"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.On("DeregisterPane", mock.Anything, "pane1").
+					Return(errors.New("db error")).Once()
+			},
+			setupReg:    func() *mockRegistry { return newRegistry("pane1") },
+			wantStatus:  http.StatusInternalServerError,
+			wantRemoved: false,
+		},
+		{
+			name: "success_with_active_session",
+			body: map[string]any{"pane_id": "pane1"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.On("DeregisterPane", mock.Anything, "pane1").Return(nil).Once()
+			},
+			setupReg:    func() *mockRegistry { return newRegistry("pane1") },
+			wantStatus:  http.StatusNoContent,
+			wantRemoved: true,
+		},
+		{
+			name: "success_without_session",
+			body: map[string]any{"pane_id": "pane1"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.On("DeregisterPane", mock.Anything, "pane1").Return(nil).Once()
+			},
+			// No session registered — shell exited before any command was run.
+			setupReg:    func() *mockRegistry { return newRegistry() },
+			wantStatus:  http.StatusNoContent,
+			wantRemoved: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			tt.setupStore(store)
+			reg := tt.setupReg()
+			srv := newServer(t, store, reg, 0)
+
+			w := doRequest(t, srv, http.MethodPost, "/api/deregister", tt.body)
+
+			assert.Equal(t, tt.wantStatus, w.Code)
+
+			if tt.wantRemoved {
+				assert.Contains(t, reg.removed, "pane1", "pane1 should be removed from registry")
+			} else {
+				assert.NotContains(t, reg.removed, "pane1", "pane1 should not be removed from registry")
+			}
+		})
+	}
+}
+
+// TestHandleDeregisterDeactivatesBeforeRemove verifies that Deactivate is called
+// on the session object before Remove evicts it from the registry.
+func TestHandleDeregisterDeactivatesBeforeRemove(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	store.On("DeregisterPane", mock.Anything, "pane1").Return(nil).Once()
+
+	reg := newRegistry("pane1")
+	sess := reg.session("pane1")
+	srv := newServer(t, store, reg, 0)
+
+	w := doRequest(t, srv, http.MethodPost, "/api/deregister", map[string]any{"pane_id": "pane1"})
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Equal(t, 1, sess.deactivateCalls, "Deactivate must be called once")
+	assert.Contains(t, reg.removed, "pane1", "session must be removed from registry")
 }
 
 // Ensure pty.Session satisfies api.PtySession at compile time.
