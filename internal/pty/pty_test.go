@@ -15,15 +15,15 @@ import (
 // --- captureState ---
 
 func TestCaptureState(t *testing.T) {
-	var s captureState
-
 	t.Run("idle_by_default", func(t *testing.T) {
+		var s captureState
 		cmdID, startedAt := s.snapshot()
 		assert.Zero(t, cmdID)
 		assert.Zero(t, startedAt)
 	})
 
 	t.Run("activate_and_snapshot", func(t *testing.T) {
+		var s captureState
 		s.activate(42, 1000)
 		cmdID, startedAt := s.snapshot()
 		assert.Equal(t, int64(42), cmdID)
@@ -31,65 +31,79 @@ func TestCaptureState(t *testing.T) {
 	})
 
 	t.Run("deactivate_clears_state", func(t *testing.T) {
+		var s captureState
 		s.activate(42, 1000)
 		s.deactivate()
 		cmdID, startedAt := s.snapshot()
 		assert.Zero(t, cmdID)
 		assert.Zero(t, startedAt)
 	})
+
+	t.Run("concurrent_activate_and_snapshot", func(t *testing.T) {
+		// Exercises the RWMutex under -race: multiple snapshot readers run
+		// concurrently while a writer calls activate, then deactivate.
+		var s captureState
+		const readers = 50
+
+		ready := make(chan struct{})
+		done := make(chan struct{}, readers)
+
+		for i := range readers {
+			go func(i int) {
+				<-ready
+				_, _ = s.snapshot()
+				done <- struct{}{}
+			}(i)
+		}
+
+		close(ready) // release all readers simultaneously
+		s.activate(99, 1000)
+		s.deactivate()
+
+		for range readers {
+			<-done
+		}
+		cmdID, _ := s.snapshot()
+		assert.Zero(t, cmdID)
+	})
 }
 
 // --- splitOnMarker ---
-
-func newIdleSession() *Session {
-	return &Session{out: &bytes.Buffer{}}
-}
-
-func newCapturingSession(cmdID, startedAt int64) *Session {
-	s := &Session{out: &bytes.Buffer{}}
-	s.state.activate(cmdID, startedAt)
-	return s
-}
 
 func TestSplitOnMarker(t *testing.T) {
 	marker := string(oscMarker)
 
 	t.Run("marker_at_start_idle_before", func(t *testing.T) {
-		sess := newIdleSession()
 		input := []byte(marker + "output data")
-		pass, cap := sess.splitOnMarker(input, 0)
+		pass, cap := splitOnMarker(input, 0)
 		assert.Empty(t, pass)
 		assert.Equal(t, []byte("output data"), cap)
 	})
 
 	t.Run("marker_in_middle_with_idle_prefix", func(t *testing.T) {
-		sess := newIdleSession()
 		input := []byte("prompt text" + marker + "cmd output")
-		pass, cap := sess.splitOnMarker(input, 0)
+		pass, cap := splitOnMarker(input, 0)
 		assert.Equal(t, []byte("prompt text"), pass)
 		assert.Equal(t, []byte("cmd output"), cap)
 	})
 
 	t.Run("marker_at_end_nothing_after", func(t *testing.T) {
-		sess := newIdleSession()
 		input := []byte("prompt" + marker)
-		pass, cap := sess.splitOnMarker(input, 0)
+		pass, cap := splitOnMarker(input, 0)
 		assert.Equal(t, []byte("prompt"), pass)
 		assert.Empty(t, cap)
 	})
 
 	t.Run("no_marker_idle_state_all_passthrough", func(t *testing.T) {
-		sess := newIdleSession()
 		input := []byte("just prompt output")
-		pass, cap := sess.splitOnMarker(input, 0)
+		pass, cap := splitOnMarker(input, 0)
 		assert.Equal(t, input, pass)
 		assert.Nil(t, cap)
 	})
 
 	t.Run("no_marker_capturing_state_all_stored", func(t *testing.T) {
-		sess := newCapturingSession(7, 5000)
 		input := []byte("command stdout bytes")
-		pass, cap := sess.splitOnMarker(input, 7)
+		pass, cap := splitOnMarker(input, 7)
 		assert.Nil(t, pass)
 		assert.Equal(t, input, cap)
 	})
@@ -100,9 +114,8 @@ func TestSplitOnMarker(t *testing.T) {
 		// In normal flow this case cannot occur: precmd always calls Deactivate
 		// before the next preexec emits a new marker, so the session is Idle by
 		// the time any marker arrives. Documented here for completeness.
-		sess := newCapturingSession(7, 5000)
 		input := []byte("tail of cmd1" + marker + "start of cmd2")
-		pass, cap := sess.splitOnMarker(input, 7)
+		pass, cap := splitOnMarker(input, 7)
 		assert.Equal(t, []byte("tail of cmd1"), pass)
 		assert.Equal(t, []byte("start of cmd2"), cap)
 	})

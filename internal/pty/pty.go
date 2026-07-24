@@ -29,9 +29,10 @@ var oscMarker = []byte("\x1b]133;C\x1b\\")
 
 // captureState is the shared handshake point between the HTTP API handlers
 // (which know the command metadata) and the PTY read loop (which sees the
-// raw byte stream). The mutex ensures these two goroutines never race.
+// raw byte stream). snapshot is called on every PTY read, so it uses RLock
+// to allow concurrent reads without contention.
 type captureState struct {
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	commandID int64 // 0 means Idle; non-zero means Capturing
 	startedAt int64 // Unix ms, set alongside commandID
 }
@@ -51,8 +52,8 @@ func (s *captureState) deactivate() {
 }
 
 func (s *captureState) snapshot() (commandID, startedAt int64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.commandID, s.startedAt
 }
 
@@ -105,14 +106,15 @@ func (s *Session) Run(ctx context.Context) error {
 	// Spawn the shell without --login so it sources the interactive rc file
 	// (.zshrc / .bashrc) rather than the login profile. creack/pty attaches a
 	// real TTY so the shell enters interactive mode automatically.
-	cmd := exec.CommandContext(ctx, s.shell)
+	// s.shell is set by the daemon operator via config, not from network input.
+	cmd := exec.CommandContext(ctx, s.shell) //nolint:gosec
 	cmd.Env = append(os.Environ(), "GRIMOIRE_PANE_ID="+s.paneID)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		return fmt.Errorf("pty: start %s: %w", s.shell, err)
 	}
-	defer ptmx.Close()
+	defer ptmx.Close() //nolint:errcheck // PTY close errors are unactionable after shell exit
 
 	// Forward terminal resize signals to the child PTY.
 	resizeCh := make(chan os.Signal, 1)
@@ -139,7 +141,7 @@ func (s *Session) Run(ctx context.Context) error {
 	// stdin → child PTY (user keystrokes).
 	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
 
-	// child PTY → stdout + DB (command output capture).
+	// child PTY → out + DB (command output capture).
 	s.readLoop(ctx, ptmx)
 
 	return cmd.Wait()
@@ -163,7 +165,7 @@ func (s *Session) readLoop(ctx context.Context, r io.Reader) {
 			// commandID, eliminating a TOCTOU race between the two decisions.
 			cmdID, startedAt := s.state.snapshot()
 			chunk := buf[:n]
-			passthrough, captured := s.splitOnMarker(chunk, cmdID)
+			passthrough, captured := splitOnMarker(chunk, cmdID)
 
 			if len(passthrough) > 0 {
 				_, _ = s.out.Write(passthrough)
@@ -189,11 +191,11 @@ func (s *Session) readLoop(ctx context.Context, r io.Reader) {
 
 // splitOnMarker splits a PTY read buffer around the OSC marker.
 // It returns (passthrough, captured):
-//   - passthrough: bytes before the marker (written to out, not stored)
-//   - captured: bytes after the marker (written to out AND stored)
+//   - passthrough: bytes before the marker (written to out; also stored when cmdID != 0)
+//   - captured: bytes after the marker (written to out AND stored when cmdID != 0)
 //
-// If no marker is found, the bytes are routed based on the current
-// captureState: Idle → (buf, nil); Capturing → (nil, buf).
+// If no marker is found, the bytes are routed based on cmdID:
+// Idle (0) → (buf, nil); Capturing (non-zero) → (nil, buf).
 //
 // NOTE: only the first marker in a buffer is stripped. A second marker in
 // the same read would pass through as raw escape bytes. This cannot occur
@@ -202,7 +204,7 @@ func (s *Session) readLoop(ctx context.Context, r io.Reader) {
 //
 // cmdID must be the value already snapshotted by the caller; splitOnMarker
 // never reads captureState itself, avoiding a redundant lock acquisition.
-func (s *Session) splitOnMarker(buf []byte, cmdID int64) (passthrough, captured []byte) {
+func splitOnMarker(buf []byte, cmdID int64) (passthrough, captured []byte) {
 	if idx := bytes.Index(buf, oscMarker); idx >= 0 {
 		// Bytes before the marker belong to Idle state (the prompt / line editor).
 		// Bytes after the marker belong to Capturing state.
