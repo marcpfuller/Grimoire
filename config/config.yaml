@@ -10,7 +10,6 @@ sync:
 ghostwriter:
   url: ""
   token: ""
-  oplog_id: 0
 
 scrub:
   rules: []

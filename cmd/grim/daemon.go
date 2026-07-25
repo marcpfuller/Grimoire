@@ -17,6 +17,7 @@ import (
 
 	"github.com/marcpfuller/grimoire/internal/api"
 	"github.com/marcpfuller/grimoire/internal/db"
+	"github.com/marcpfuller/grimoire/internal/ghostwriter"
 	"github.com/marcpfuller/grimoire/internal/logger"
 	grimsync "github.com/marcpfuller/grimoire/internal/sync"
 )
@@ -89,9 +90,29 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	case <-time.After(100 * time.Millisecond):
 	}
 
+	// --- Ghostwriter pusher ---
+	// Use the real client when URL and token are configured. The oplog is
+	// discovered automatically from the service token at startup via Init.
+	// Falls back to a no-op stub so the daemon can run without Ghostwriter
+	// credentials during development or testing.
+	var pusher grimsync.Pusher
+	gwURL := viper.GetString("ghostwriter.url")
+	gwToken := viper.GetString("ghostwriter.token")
+	if gwURL != "" && gwToken != "" {
+		client := ghostwriter.New(store, gwURL, gwToken, log)
+		if err := client.Init(ctx); err != nil {
+			return fmt.Errorf("ghostwriter init: %w", err)
+		}
+		pusher = client
+		log.Info("ghostwriter pusher enabled", "url", gwURL)
+	} else {
+		pusher = &noopPusher{}
+		log.Warn("ghostwriter pusher disabled — set ghostwriter.url and ghostwriter.token to enable sync")
+	}
+
 	// --- sync loop ---
 	interval := time.Duration(viper.GetInt("sync.interval_seconds")) * time.Second
-	syncer := grimsync.New(store, &noopPusher{}, grimsync.Config{Interval: interval}, log)
+	syncer := grimsync.New(store, pusher, grimsync.Config{Interval: interval}, log)
 	var syncWg sync.WaitGroup
 	syncWg.Add(1)
 	go func() {
@@ -130,8 +151,7 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-// noopPusher is a stub Ghostwriter pusher used until internal/ghostwriter
-// implements grimsync.Pusher. Replaces this once the GW client is built.
+// noopPusher is used when Ghostwriter credentials are not configured.
 type noopPusher struct{}
 
 func (n *noopPusher) PushCommand(_ context.Context, _ *db.Command) error { return nil }
