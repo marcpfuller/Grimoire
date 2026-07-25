@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -180,6 +181,9 @@ func (s *sqliteStore) ReserveShortID(ctx context.Context, paneID string, shortID
 		 ON CONFLICT(pane_id) DO UPDATE SET short_id = excluded.short_id`,
 		paneID, shortID,
 	); err != nil {
+		if strings.Contains(err.Error(), "FOREIGN KEY constraint failed") {
+			return ErrNotFound
+		}
 		return fmt.Errorf("db: reserve: %w", err)
 	}
 	return tx.Commit()

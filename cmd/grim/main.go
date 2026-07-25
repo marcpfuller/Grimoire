@@ -1,7 +1,7 @@
 // Package main is the entry point for the grim CLI.
 //
 // grim shell --project <id>   start an instrumented interactive shell
-// grim daemon start           start the Ghostwriter sync daemon (stub)
+// grim daemon start           start the Ghostwriter sync daemon
 package main
 
 import (
@@ -11,13 +11,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
-
-	"github.com/marcpfuller/grimoire/internal/api"
-	internalpty "github.com/marcpfuller/grimoire/internal/pty"
 )
 
 func main() {
@@ -63,6 +59,7 @@ func initConfig() error {
 	viper.SetDefault("server.port", 7777)
 	viper.SetDefault("api.max_short_id_retries", 5)
 	viper.SetDefault("db.path", "grimoire.db")
+	viper.SetDefault("sync.interval_seconds", 30)
 	viper.SetDefault("shell", "")
 	viper.SetDefault("log.dir", ".")
 	viper.SetDefault("log.filename", "grimoire.log")
@@ -88,48 +85,4 @@ func generatePaneID() (string, error) {
 		return "", fmt.Errorf("generate pane id: %w", err)
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// sessionRegistry is a thread-safe map of active pane sessions.
-// It implements api.SessionRegistry.
-type sessionRegistry struct {
-	mu       sync.RWMutex
-	sessions map[string]*internalpty.Session
-}
-
-func newSessionRegistry() *sessionRegistry {
-	return &sessionRegistry{sessions: make(map[string]*internalpty.Session)}
-}
-
-// Register adds sess under paneID. Must be called before the HTTP server
-// starts accepting requests for this pane.
-func (r *sessionRegistry) Register(paneID string, sess *internalpty.Session) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sessions[paneID] = sess
-}
-
-// Lookup implements api.SessionRegistry.
-func (r *sessionRegistry) Lookup(paneID string) (api.PtySession, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	s, ok := r.sessions[paneID]
-	return s, ok
-}
-
-// Remove implements api.SessionRegistry.
-func (r *sessionRegistry) Remove(paneID string) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.sessions, paneID)
-}
-
-// DeactivateAll calls Deactivate on every live session. Used during graceful
-// shutdown so no session is left in Capturing state.
-func (r *sessionRegistry) DeactivateAll() {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for _, s := range r.sessions {
-		s.Deactivate()
-	}
 }

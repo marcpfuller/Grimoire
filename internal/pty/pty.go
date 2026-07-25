@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -19,14 +20,95 @@ import (
 	"github.com/marcpfuller/grimoire/internal/db"
 )
 
-// oscMarker is the shell integration sequence emitted by the preexec hook
-// immediately before a command runs. It signals the PTY read loop to begin
-// routing output to the active command bucket.
+// activatePrefix is the fixed start of the enriched activate OSC sequence.
+// Full format: ESC ] 133 ; C ; id=N ; start=N ; sid=S ST  (ST = ESC \)
+// The shell's preexec hook emits this after POST /api/execute returns the
+// command_id and short_id. The PTY read loop parses the embedded metadata
+// to self-activate without any in-process callback from the HTTP server.
+var activatePrefix = []byte("\x1b]133;C;")
+
+// oscST is the OSC string terminator (ESC \).
+var oscST = []byte("\x1b\\")
+
+// deactivateMarker is the full deactivate OSC sequence.
+// The shell's precmd hook emits this AFTER POST /api/precmd returns 204 so
+// that FinalizeCommand always completes before the PTY stops capturing.
+var deactivateMarker = []byte("\x1b]133;D\x1b\\")
+
+// activateParams holds the parsed fields from an enriched activate marker.
+type activateParams struct {
+	commandID int64
+	startedAt int64
+	shortID   string
+}
+
+// buildActivateMarker constructs the enriched OSC activate sequence for a
+// command. Shell integration scripts emit this after POST /api/execute returns.
+func buildActivateMarker(commandID, startedAt int64, shortID string) []byte {
+	return []byte(fmt.Sprintf("\x1b]133;C;id=%d;start=%d;sid=%s\x1b\\",
+		commandID, startedAt, shortID))
+}
+
+// findActivateMarker searches buf for the enriched activate OSC marker.
+// Returns:
+//   - before: byte index where the marker starts (bytes before are passthrough)
+//   - after: byte index where the marker ends (bytes from here are captured)
+//   - params: the parsed activate parameters
+//   - found: true if a complete, valid marker was found
 //
-// Format: ESC ] 133 ; C ST  (ST = ESC \)
-// Compatible with the iTerm2 / Warp shell integration protocol.
-// The marker is stripped from the passthrough stream so the user never sees it.
-var oscMarker = []byte("\x1b]133;C\x1b\\")
+// Returns found=false if the marker is absent, incomplete (spans a buffer
+// boundary), or has unparseable parameters.
+func findActivateMarker(buf []byte) (before, after int, params activateParams, found bool) {
+	idx := bytes.Index(buf, activatePrefix)
+	if idx < 0 {
+		return 0, 0, activateParams{}, false
+	}
+	rest := buf[idx+len(activatePrefix):]
+	stIdx := bytes.Index(rest, oscST)
+	if stIdx < 0 {
+		// Marker spans a buffer boundary — skip this read.
+		return 0, 0, activateParams{}, false
+	}
+	p, err := parseActivateParams(rest[:stIdx])
+	if err != nil {
+		return 0, 0, activateParams{}, false
+	}
+	return idx, idx + len(activatePrefix) + stIdx + len(oscST), p, true
+}
+
+// parseActivateParams parses the parameter string between the OSC prefix and
+// the string terminator, e.g. "id=42;start=1234567890000;sid=abc1234".
+func parseActivateParams(paramStr []byte) (activateParams, error) {
+	var p activateParams
+	for _, kv := range bytes.Split(paramStr, []byte(";")) {
+		eq := bytes.IndexByte(kv, '=')
+		if eq < 0 {
+			continue
+		}
+		key := string(kv[:eq])
+		val := string(kv[eq+1:])
+		switch key {
+		case "id":
+			n, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				return activateParams{}, fmt.Errorf("invalid id: %w", err)
+			}
+			p.commandID = n
+		case "start":
+			n, err := strconv.ParseInt(val, 10, 64)
+			if err != nil {
+				return activateParams{}, fmt.Errorf("invalid start: %w", err)
+			}
+			p.startedAt = n
+		case "sid":
+			p.shortID = val
+		}
+	}
+	if p.commandID == 0 || p.startedAt == 0 || p.shortID == "" {
+		return activateParams{}, fmt.Errorf("missing required params (id, start, sid)")
+	}
+	return p, nil
+}
 
 // captureState is the shared handshake point between the HTTP API handlers
 // (which know the command metadata) and the PTY read loop (which sees the
@@ -98,23 +180,6 @@ func New(store db.Store, paneID, shell string, logger *slog.Logger) *Session {
 // PaneID returns the GRIMOIRE_PANE_ID for this session.
 func (s *Session) PaneID() string { return s.paneID }
 
-// Activate is called by the HTTP handler for POST /api/execute once
-// CreateCommand has succeeded. It switches the read loop from Idle to
-// Capturing for this session.
-//
-// Why no race: the shell is blocked on the HTTP call (curl in preexec) so no
-// command output can appear in the PTY until this method returns and the HTTP
-// response is sent back to the shell.
-func (s *Session) Activate(commandID, startedAt int64, shortID string) {
-	s.state.activate(commandID, startedAt, shortID)
-}
-
-// Deactivate is called by the HTTP handler for POST /api/precmd once
-// FinalizeCommand has succeeded. It switches the read loop back to Idle.
-func (s *Session) Deactivate() {
-	s.state.deactivate()
-}
-
 // Run spawns the child shell, wires I/O, and blocks until the shell exits.
 // On return the caller should exit or return to its own shell (ssh semantics).
 func (s *Session) Run(ctx context.Context) error {
@@ -163,39 +228,20 @@ func (s *Session) Run(ctx context.Context) error {
 }
 
 // readLoop reads from the PTY master until EOF (shell exit). Each read is
-// routed based on the current captureState:
+// dispatched to processChunk, which handles OSC marker detection and routing.
 //
-//   - Idle (commandID == 0): bytes are written to out only.
-//   - Capturing (commandID != 0): bytes are written to out AND stored as
-//     an output_chunk row in the database.
-//
-// The OSC marker sequence is stripped from the passthrough stream whenever it
-// is detected, regardless of capture state.
+// Known limitation: if an activate OSC sequence is split across two consecutive
+// reads (activatePrefix in buf N, ST terminator in buf N+1), findActivateMarker
+// returns found=false and the partial prefix bytes are written to out as raw
+// characters. A carry buffer across reads would fix this but adds complexity;
+// with a 4096-byte buffer and the short OSC sequences emitted by shell hooks
+// this split is extremely unlikely in practice.
 func (s *Session) readLoop(ctx context.Context, r io.Reader) {
 	buf := make([]byte, 4096)
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			// Single snapshot per read: routing and storage use the same
-			// commandID, eliminating a TOCTOU race between the two decisions.
-			cmdID, startedAt, shortID := s.state.snapshot()
-			chunk := buf[:n]
-			passthrough, captured := splitOnMarker(chunk, cmdID)
-
-			if len(passthrough) > 0 {
-				_, _ = s.out.Write(passthrough)
-				// When Capturing, bytes before a mid-buffer marker are the
-				// tail of the current command's output; store them too.
-				if cmdID != 0 {
-					s.storeChunk(ctx, passthrough, cmdID, startedAt, shortID)
-				}
-			}
-			if len(captured) > 0 {
-				_, _ = s.out.Write(captured)
-				if cmdID != 0 {
-					s.storeChunk(ctx, captured, cmdID, startedAt, shortID)
-				}
-			}
+			s.processChunk(ctx, buf[:n])
 		}
 		if err != nil {
 			// EOF is normal when the child shell exits.
@@ -204,32 +250,66 @@ func (s *Session) readLoop(ctx context.Context, r io.Reader) {
 	}
 }
 
-// splitOnMarker splits a PTY read buffer around the OSC marker.
-// It returns (passthrough, captured):
-//   - passthrough: bytes before the marker (written to out; also stored when cmdID != 0)
-//   - captured: bytes after the marker (written to out AND stored when cmdID != 0)
+// processChunk routes a single PTY read buffer based on OSC marker content
+// and current capture state:
 //
-// If no marker is found, the bytes are routed based on cmdID:
-// Idle (0) → (buf, nil); Capturing (non-zero) → (nil, buf).
+//   - Deactivate marker (\x1b]133;D\x1b\): bytes before are stored if capturing,
+//     then captureState is cleared. Bytes after go to passthrough.
+//   - Activate marker (\x1b]133;C;id=N;...\x1b\): bytes before are passthrough
+//     (or stored if unexpectedly still capturing), captureState is set from the
+//     embedded params, bytes after are stored under the new commandID.
+//   - No marker: bytes are written to out; if capturing, also stored in DB.
 //
-// NOTE: only the first marker in a buffer is stripped. A second marker in
-// the same read would pass through as raw escape bytes. This cannot occur
-// in normal flow (precmd always runs between commands, resetting state before
-// the next preexec emits a new marker) but is documented here for clarity.
-//
-// cmdID must be the value already snapshotted by the caller; splitOnMarker
-// never reads captureState itself, avoiding a redundant lock acquisition.
-func splitOnMarker(buf []byte, cmdID int64) (passthrough, captured []byte) {
-	if idx := bytes.Index(buf, oscMarker); idx >= 0 {
-		// Bytes before the marker belong to Idle state (the prompt / line editor).
-		// Bytes after the marker belong to Capturing state.
-		return buf[:idx], buf[idx+len(oscMarker):]
+// Only the first marker in a buffer is processed. A second marker in the same
+// read passes through as raw bytes — this cannot occur in normal shell flow
+// (precmd always fires between commands) but is documented here for clarity.
+func (s *Session) processChunk(ctx context.Context, chunk []byte) {
+	// --- Deactivate marker ---
+	if dIdx := bytes.Index(chunk, deactivateMarker); dIdx >= 0 {
+		before := chunk[:dIdx]
+		after := chunk[dIdx+len(deactivateMarker):]
+		cmdID, startedAt, shortID := s.state.snapshot()
+		if len(before) > 0 {
+			_, _ = s.out.Write(before)
+			if cmdID != 0 {
+				s.storeChunk(ctx, before, cmdID, startedAt, shortID)
+			}
+		}
+		s.state.deactivate()
+		if len(after) > 0 {
+			_, _ = s.out.Write(after)
+		}
+		return
 	}
 
-	if cmdID != 0 {
-		return nil, buf
+	// --- Activate marker ---
+	if bIdx, aIdx, params, found := findActivateMarker(chunk); found {
+		before := chunk[:bIdx]
+		after := chunk[aIdx:]
+		// Bytes before the activate marker are prompt/line-editor output.
+		// If unexpectedly in capturing state (shouldn't occur in normal flow),
+		// store them under the outgoing commandID before switching.
+		cmdID, startedAt, shortID := s.state.snapshot()
+		if len(before) > 0 {
+			_, _ = s.out.Write(before)
+			if cmdID != 0 {
+				s.storeChunk(ctx, before, cmdID, startedAt, shortID)
+			}
+		}
+		s.state.activate(params.commandID, params.startedAt, params.shortID)
+		if len(after) > 0 {
+			_, _ = s.out.Write(after)
+			s.storeChunk(ctx, after, params.commandID, params.startedAt, params.shortID)
+		}
+		return
 	}
-	return buf, nil
+
+	// --- Normal routing ---
+	cmdID, startedAt, shortID := s.state.snapshot()
+	_, _ = s.out.Write(chunk)
+	if cmdID != 0 {
+		s.storeChunk(ctx, chunk, cmdID, startedAt, shortID)
+	}
 }
 
 // storeChunk persists buf as an output_chunk under cmdID. The caller is

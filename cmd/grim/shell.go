@@ -1,8 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"errors"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,7 +15,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/marcpfuller/grimoire/internal/api"
 	"github.com/marcpfuller/grimoire/internal/db"
 	"github.com/marcpfuller/grimoire/internal/logger"
 	internalpty "github.com/marcpfuller/grimoire/internal/pty"
@@ -34,7 +34,7 @@ func init() {
 func runShell(cmd *cobra.Command, _ []string) error {
 	projectID, _ := cmd.Flags().GetString("project")
 
-	addr := fmt.Sprintf("%s:%d",
+	daemonAddr := fmt.Sprintf("http://%s:%d",
 		viper.GetString("server.host"),
 		viper.GetInt("server.port"),
 	)
@@ -55,7 +55,7 @@ func runShell(cmd *cobra.Command, _ []string) error {
 	}
 	defer rotator.Close() //nolint:errcheck
 
-	// --- db ---
+	// --- db (output chunk writes only) ---
 	store, err := db.Open(viper.GetString("db.path"))
 	if err != nil {
 		return fmt.Errorf("db: %w", err)
@@ -68,10 +68,9 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := store.UpsertPane(ctx, paneID, projectID, time.Now().UnixMilli()); err != nil {
+	// Register this pane with the daemon. Fails fast if the daemon is not
+	// running — shell hooks require the daemon's HTTP API to be available.
+	if err := registerPane(daemonAddr, paneID, projectID); err != nil {
 		return fmt.Errorf("register pane: %w", err)
 	}
 
@@ -84,34 +83,8 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		shellBin = "/bin/sh"
 	}
 
-	// --- session + registry ---
-	reg := newSessionRegistry()
-	sess := internalpty.New(store, paneID, shellBin, log)
-	reg.Register(paneID, sess)
-
-	// --- HTTP API server ---
-	srv := api.New(store, reg, viper.GetInt("api.max_short_id_retries"), log)
-	httpSrv := &http.Server{
-		Addr:              addr,
-		Handler:           srv.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	httpErrCh := make(chan error, 1)
-	go func() {
-		if err := httpSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
-			httpErrCh <- err
-		}
-	}()
-
-	// Fail fast if the HTTP server cannot bind (e.g. port already in use).
-	// ListenAndServe returns a bind error almost immediately, so 100 ms is
-	// enough to distinguish a startup failure from normal running.
-	select {
-	case err := <-httpErrCh:
-		return fmt.Errorf("http server: %w", err)
-	case <-time.After(100 * time.Millisecond):
-	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	// Cancel ctx on SIGTERM / SIGINT so sess.Run returns cleanly.
 	sigCh := make(chan os.Signal, 1)
@@ -124,10 +97,12 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		}
 	}()
 
+	sess := internalpty.New(store, paneID, shellBin, log)
+
 	log.Info("grim shell started",
 		"pane_id", paneID,
 		"project_id", projectID,
-		"addr", addr,
+		"daemon", daemonAddr,
 		"shell", shellBin,
 	)
 
@@ -136,23 +111,41 @@ func runShell(cmd *cobra.Command, _ []string) error {
 
 	signal.Stop(sigCh)
 
-	// --- cleanup (best-effort; use a fresh context) ---
-	reg.DeactivateAll()
-	_ = store.DeregisterPane(context.Background(), paneID)
-
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutCancel()
-	_ = httpSrv.Shutdown(shutCtx)
-
-	// Surface HTTP server startup errors (e.g. "address already in use") only
-	// if the shell itself exited cleanly — a port conflict is the root cause.
-	select {
-	case httpErr := <-httpErrCh:
-		if runErr == nil {
-			return fmt.Errorf("http server: %w", httpErr)
-		}
-	default:
-	}
+	// Deregister pane with daemon (best-effort; abnormal exits are fine).
+	_ = deregisterPane(daemonAddr, paneID)
 
 	return runErr
+}
+
+// registerPane calls POST /api/register on the daemon.
+func registerPane(addr, paneID, projectID string) error {
+	body, _ := json.Marshal(map[string]string{
+		"pane_id":    paneID,
+		"project_id": projectID,
+	})
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(addr+"/api/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("daemon unreachable (%s): %w", addr, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("daemon returned %d for /api/register", resp.StatusCode)
+	}
+	return nil
+}
+
+// deregisterPane calls POST /api/deregister on the daemon.
+func deregisterPane(addr, paneID string) error {
+	body, _ := json.Marshal(map[string]string{"pane_id": paneID})
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Post(addr+"/api/deregister", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("deregister: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("daemon returned %d for /api/deregister", resp.StatusCode)
+	}
+	return nil
 }
