@@ -66,7 +66,8 @@ type Store interface {
 	// Commands
 	// ReserveShortID atomically claims shortID for paneID in the
 	// pending_commands table. Returns ErrConflict if shortID is already in use
-	// in either pending_commands or commands. The same pane may call this again
+	// in either pending_commands or commands. Returns ErrNotFound if paneID has
+	// not been registered via UpsertPane. The same pane may call this again
 	// to replace its current reservation.
 	ReserveShortID(ctx context.Context, paneID string, shortID string) error
 	// CreateCommand claims the pending reservation for cmd.PaneID, assigns the

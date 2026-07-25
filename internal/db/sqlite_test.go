@@ -384,7 +384,7 @@ func TestReserveShortID(t *testing.T) {
 	t.Run("foreign_key_on_pane", func(t *testing.T) {
 		s := openTestStore(t)
 		err := s.ReserveShortID(context.Background(), "no-such-pane", "fk00001")
-		assert.Error(t, err, "expected FK violation for unregistered pane")
+		assert.ErrorIs(t, err, db.ErrNotFound, "unregistered pane should return ErrNotFound")
 	})
 }
 

@@ -4,9 +4,10 @@
 // Endpoints:
 //
 //	GET  /api/next-id    shell precmd reserves the short ID for the next command
-//	POST /api/execute    shell preexec records a command start and activates PTY capture
-//	POST /api/precmd     shell precmd records a command end and deactivates PTY capture
-//	POST /api/deregister shell exit removes the pane's pending reservation and session
+//	POST /api/register   grim shell registers a new pane with the daemon
+//	POST /api/execute    shell preexec records a command start
+//	POST /api/precmd     shell precmd records a command end
+//	POST /api/deregister shell exit removes the pane's pending reservation
 package api
 
 import (
@@ -15,41 +16,23 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/marcpfuller/grimoire/internal/db"
 	"github.com/marcpfuller/grimoire/internal/util"
 )
 
-// PtySession is the subset of pty.Session consumed by the API handlers.
-// Defined as an interface so the api package does not import internal/pty,
-// and so handlers can be tested without a real PTY.
-type PtySession interface {
-	Activate(commandID, startedAt int64, shortID string)
-	Deactivate()
-}
-
-// SessionRegistry manages the daemon's live PTY sessions by pane ID.
-// Implemented by the daemon's session manager in main.go using a
-// sync.RWMutex-protected map.
-type SessionRegistry interface {
-	Lookup(paneID string) (PtySession, bool)
-	// Remove unregisters paneID. It is a no-op if paneID is not present.
-	Remove(paneID string)
-}
-
 // Server holds the shared dependencies for all HTTP handlers.
 type Server struct {
 	store             db.Store
-	sessions          SessionRegistry
 	maxShortIDRetries int
 	logger            *slog.Logger
 }
 
 // New creates a Server. logger may be nil — all log calls become no-ops.
-func New(store db.Store, sessions SessionRegistry, maxShortIDRetries int, logger *slog.Logger) *Server {
+func New(store db.Store, maxShortIDRetries int, logger *slog.Logger) *Server {
 	return &Server{
 		store:             store,
-		sessions:          sessions,
 		maxShortIDRetries: maxShortIDRetries,
 		logger:            logger,
 	}
@@ -59,6 +42,7 @@ func New(store db.Store, sessions SessionRegistry, maxShortIDRetries int, logger
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/next-id", s.handleNextID)
+	mux.HandleFunc("POST /api/register", s.handleRegister)
 	mux.HandleFunc("POST /api/execute", s.handleExecute)
 	mux.HandleFunc("POST /api/precmd", s.handlePrecmd)
 	mux.HandleFunc("POST /api/deregister", s.handleDeregister)
@@ -69,6 +53,11 @@ func (s *Server) Handler() http.Handler {
 
 type nextIDResponse struct {
 	ShortID string `json:"short_id"`
+}
+
+type registerRequest struct {
+	PaneID    string `json:"pane_id"`
+	ProjectID string `json:"project_id"`
 }
 
 type executeRequest struct {
@@ -108,13 +97,6 @@ func (s *Server) handleNextID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fail fast — if no live session exists for this pane the daemon cannot
-	// route output to any command bucket.
-	if _, ok := s.sessions.Lookup(paneID); !ok {
-		writeError(w, http.StatusServiceUnavailable, "no active session for pane")
-		return
-	}
-
 	// Retry loop: generate a random short ID and attempt to reserve it.
 	// ErrConflict means the generated ID is already in use — extremely rare
 	// (28-bit space) but bounded by s.maxShortIDRetries.
@@ -130,6 +112,10 @@ func (s *Server) handleNextID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, nextIDResponse{ShortID: shortID})
 			return
 		}
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "pane not registered")
+			return
+		}
 		if !errors.Is(err, db.ErrConflict) {
 			s.logWarn("next-id: reserve failed", "pane_id", paneID, "err", err)
 			writeError(w, http.StatusInternalServerError, "failed to reserve short ID")
@@ -143,8 +129,31 @@ func (s *Server) handleNextID(w http.ResponseWriter, r *http.Request) {
 		fmt.Sprintf("short ID conflict after %d retries", s.maxShortIDRetries))
 }
 
+// handleRegister handles POST /api/register.
+// Called by `grim shell` to register a pane with the daemon before spawning
+// the shell process. Returns 204 on success.
+func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
+	var req registerRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.PaneID == "" || req.ProjectID == "" {
+		writeError(w, http.StatusBadRequest, "pane_id and project_id are required")
+		return
+	}
+	if err := s.store.UpsertPane(r.Context(), req.PaneID, req.ProjectID, time.Now().UnixMilli()); err != nil {
+		s.logWarn("register: UpsertPane failed", "pane_id", req.PaneID, "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to register pane")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleExecute handles POST /api/execute.
-// It records a command start in the DB and activates PTY capture.
+// It records a command start in the DB. The shell's preexec hook emits the
+// enriched OSC activate marker into the PTY after this call returns, which
+// triggers PTY capture in the local grim shell process.
 func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	var req executeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -156,30 +165,29 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, ok := s.sessions.Lookup(req.PaneID)
-	if !ok {
-		writeError(w, http.StatusServiceUnavailable, "no active session for pane")
-		return
-	}
-
 	cmd := &db.Command{
 		PaneID:    req.PaneID,
 		Command:   req.Command,
 		StartedAt: *req.StartedAt,
 	}
 	if err := s.store.CreateCommand(r.Context(), cmd); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			// No pending reservation — shell must call GET /api/next-id first.
+			writeError(w, http.StatusUnprocessableEntity, "no pending reservation for pane")
+			return
+		}
 		s.logWarn("execute: CreateCommand failed", "pane_id", req.PaneID, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to create command")
 		return
 	}
 
-	sess.Activate(cmd.ID, cmd.StartedAt, cmd.ShortID)
 	writeJSON(w, http.StatusOK, executeResponse{CommandID: cmd.ID, ShortID: cmd.ShortID})
 }
 
 // handlePrecmd handles POST /api/precmd.
-// It records a command end in the DB. Deactivate is always called via defer
-// so the PTY capture state is never left stuck, even on DB failure.
+// It records a command end in the DB. The shell's precmd hook emits the OSC
+// deactivate marker into the PTY after this call returns, which stops PTY
+// capture in the local grim shell process.
 func (s *Server) handlePrecmd(w http.ResponseWriter, r *http.Request) {
 	var req precmdRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -191,18 +199,12 @@ func (s *Server) handlePrecmd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess, ok := s.sessions.Lookup(req.PaneID)
-	if !ok {
-		writeError(w, http.StatusServiceUnavailable, "no active session for pane")
-		return
-	}
-
-	// Deactivate always fires — a DB failure must not leave the PTY stuck in
-	// Capturing state for the lifetime of the session.
-	defer sess.Deactivate()
-
 	if err := s.store.FinalizeCommand(r.Context(), req.ShortID, *req.EndedAt, req.ExitCode); err != nil {
-		s.logWarn("precmd: FinalizeCommand failed", "short_id", req.ShortID, "err", err)
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "command not found")
+			return
+		}
+		s.logWarn("precmd: FinalizeCommand failed", "pane_id", req.PaneID, "short_id", req.ShortID, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to finalize command")
 		return
 	}
@@ -211,11 +213,8 @@ func (s *Server) handlePrecmd(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeregister handles POST /api/deregister.
-// Called by the shell on exit to clear the pending short ID reservation and
-// remove the PTY session from the in-memory registry.
-// If DeregisterPane fails, a 500 is returned and the session is preserved.
-// On success the session is deactivated and evicted so the daemon does not
-// hold a stale entry.
+// Called by grim shell on exit to clear the pending short ID reservation.
+// The pane row and all its commands are retained for historical purposes.
 func (s *Server) handleDeregister(w http.ResponseWriter, r *http.Request) {
 	var req deregisterRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -231,13 +230,6 @@ func (s *Server) handleDeregister(w http.ResponseWriter, r *http.Request) {
 		s.logWarn("deregister: DeregisterPane failed", "pane_id", req.PaneID, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to deregister pane")
 		return
-	}
-
-	// Deactivate and evict the session. No-op if the shell exited before any
-	// command was captured or the session was never registered.
-	if sess, ok := s.sessions.Lookup(req.PaneID); ok {
-		sess.Deactivate()
-		s.sessions.Remove(req.PaneID)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
