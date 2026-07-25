@@ -480,3 +480,9 @@ func TestHandleTag(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleHealth(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	w := doRequest(t, newServer(t, store, 5), http.MethodGet, "/api/health", "")
+	assert.Equal(t, http.StatusOK, w.Code)
+}

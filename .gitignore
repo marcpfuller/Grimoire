@@ -36,3 +36,6 @@ proj_details/
 
 # Generated mocks (regenerate with: make mocks)
 internal/db/mocks/
+
+# Dist directory
+dist/

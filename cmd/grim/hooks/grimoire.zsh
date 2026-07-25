@@ -34,6 +34,7 @@ fi
 _grimoire_next_short_id=""   # short_id reserved for the next command
 _grimoire_active_short_id="" # short_id of the currently running command
 _grimoire_active_started_at="" # started_at ms of the currently running command
+_grimoire_preexec_fired=0    # 1 if preexec ran since the last precmd; 0 on empty Enter
 
 # --- Millisecond timestamp ---
 # python3 is universally available and gives true ms precision.
@@ -67,6 +68,9 @@ _grimoire_reserve_next_id() {
 # pty.Session.readLoop begins capturing output.
 _grimoire_preexec() {
     local cmd="${1}"
+
+    # Mark that a real command is running so precmd reserves a fresh ID.
+    _grimoire_preexec_fired=1
 
     # No reservation means daemon wasn't reachable when the prompt was drawn.
     # Skip silently so the command still runs normally.
@@ -103,6 +107,11 @@ _grimoire_preexec() {
 _grimoire_precmd() {
     local exit_code=$? # must be first — captures the command's exit status
 
+    # Capture and reset the fired flag. If preexec didn't fire (empty Enter),
+    # we keep the existing short_id rather than reserving a new one.
+    local preexec_fired=${_grimoire_preexec_fired}
+    _grimoire_preexec_fired=0
+
     if [[ -n "${_grimoire_active_short_id}" ]]; then
         local ended_at
         ended_at=$(_grimoire_ms)
@@ -122,7 +131,11 @@ _grimoire_precmd() {
         _grimoire_active_started_at=""
     fi
 
-    _grimoire_reserve_next_id
+    # Only reserve a new ID when a command was actually executed, or on the
+    # very first prompt where no ID has been reserved yet.
+    if [[ ${preexec_fired} -eq 1 || -z "${_grimoire_next_short_id}" ]]; then
+        _grimoire_reserve_next_id
+    fi
 }
 
 # --- Prompt integration ---

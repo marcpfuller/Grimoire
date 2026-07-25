@@ -117,6 +117,9 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		}
 	}()
 
+	// Warn the operator on stderr if the daemon becomes unreachable mid-session.
+	go watchDaemon(ctx, daemonAddr)
+
 	sess := internalpty.New(store, internalpty.SessionConfig{
 		PaneID:     paneID,
 		Shell:      shellBin,
@@ -204,6 +207,45 @@ func buildShellInit(shellBin string) (shellArgs, extraEnv []string, cleanup func
 	default:
 		// sh, fish, etc. — no auto-source support; hooks must be sourced manually.
 		return nil, nil, noop, nil
+	}
+}
+
+// watchDaemon polls GET /api/health every 30s and writes a warning to stderr
+// the first time the daemon becomes unreachable, then an info line when it
+// recovers. It returns when ctx is cancelled (i.e. the shell exits).
+func watchDaemon(ctx context.Context, addr string) {
+	const interval = 30 * time.Second
+	const timeout = 2 * time.Second
+
+	client := &http.Client{Timeout: timeout}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	wasDown := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			resp, err := client.Get(addr + "/api/health") //nolint:noctx // best-effort probe; context cancel handles shutdown
+			if err != nil || resp.StatusCode != http.StatusOK {
+				if resp != nil {
+					resp.Body.Close() //nolint:errcheck,gosec // G104: best-effort drain
+				}
+				if !wasDown {
+					wasDown = true
+					fmt.Fprintln(os.Stderr,
+						"\n\033[33m[grimoire] WARNING: daemon unreachable — commands are not being captured\033[0m")
+				}
+			} else {
+				resp.Body.Close() //nolint:errcheck,gosec // G104: best-effort drain
+				if wasDown {
+					wasDown = false
+					fmt.Fprintln(os.Stderr,
+						"\033[32m[grimoire] daemon reconnected — capture resumed\033[0m")
+				}
+			}
+		}
 	}
 }
 

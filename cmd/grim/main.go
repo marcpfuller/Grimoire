@@ -39,6 +39,7 @@ func init() {
 	rootCmd.AddCommand(shellCmd)
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(tagCmd)
+	rootCmd.AddCommand(serviceCmd)
 }
 
 // initConfig reads the config file and sets Viper defaults. Called by

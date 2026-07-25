@@ -1,6 +1,6 @@
-BINARY_NAME := grimoire
+BINARY_NAME := grim
 BUILD_DIR   := dist
-CMD_PATH    := ./cmd/grimoire
+CMD_PATH    := ./cmd/grim
 
 .PHONY: all build test lint clean web mocks
 
