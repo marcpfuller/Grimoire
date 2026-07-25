@@ -3,12 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +22,12 @@ import (
 	"github.com/marcpfuller/grimoire/internal/logger"
 	internalpty "github.com/marcpfuller/grimoire/internal/pty"
 )
+
+//go:embed hooks/grimoire.zsh
+var zshHook []byte
+
+//go:embed hooks/grimoire.bash
+var bashHook []byte
 
 var shellCmd = &cobra.Command{
 	Use:   "shell",
@@ -83,6 +92,17 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		shellBin = "/bin/sh"
 	}
 
+	// --- shell hook auto-injection ---
+	// Build shell-specific args/env so the Grimoire hooks are sourced
+	// automatically without requiring operators to modify their rc files.
+	shellArgs, extraEnv, hookCleanup, err := buildShellInit(shellBin)
+	if err != nil {
+		log.Warn("grim shell: hook injection failed, continuing without capture hooks",
+			"shell", shellBin, "err", err)
+		hookCleanup = func() {}
+	}
+	defer hookCleanup()
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -97,7 +117,13 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		}
 	}()
 
-	sess := internalpty.New(store, paneID, shellBin, log)
+	sess := internalpty.New(store, internalpty.SessionConfig{
+		PaneID:     paneID,
+		Shell:      shellBin,
+		DaemonAddr: daemonAddr,
+		ShellArgs:  shellArgs,
+		ExtraEnv:   extraEnv,
+	}, log)
 
 	log.Info("grim shell started",
 		"pane_id", paneID,
@@ -115,6 +141,70 @@ func runShell(cmd *cobra.Command, _ []string) error {
 	_ = deregisterPane(daemonAddr, paneID)
 
 	return runErr
+}
+
+// buildShellInit creates temporary init files for the detected shell type and
+// returns the extra args and env vars needed to auto-source the Grimoire hooks.
+// cleanup must be called after the shell exits to remove temp files.
+//
+//   - zsh:  sets ZDOTDIR to a temp dir whose .zshrc sources the real ~/.zshrc
+//     then the Grimoire zsh hook. No args needed.
+//   - bash: returns --init-file pointing to a temp file that sources ~/.bashrc
+//     then the Grimoire bash hook.
+//   - other shells: returns no-ops; operators must source hooks manually.
+func buildShellInit(shellBin string) (shellArgs, extraEnv []string, cleanup func(), err error) {
+	base := strings.ToLower(filepath.Base(shellBin))
+	noop := func() {}
+
+	switch {
+	case strings.HasSuffix(base, "zsh"):
+		zdotdir, e := os.MkdirTemp("", "grimoire-zdotdir-*")
+		if e != nil {
+			return nil, nil, noop, fmt.Errorf("zsh init: mkdirtemp: %w", e)
+		}
+		cleanup = func() { _ = os.RemoveAll(zdotdir) }
+
+		// .zshrc: unset ZDOTDIR first so nested shells use the real one,
+		// then source the operator's real .zshrc, then inject Grimoire hooks.
+		zshrc := fmt.Sprintf(
+			"unset ZDOTDIR\n"+
+				"[[ -f \"${HOME}/.zshrc\" ]] && source \"${HOME}/.zshrc\"\n"+
+				"# --- Grimoire hooks (auto-injected by grim shell) ---\n"+
+				"%s\n",
+			zshHook,
+		)
+		if e := os.WriteFile(filepath.Join(zdotdir, ".zshrc"), []byte(zshrc), 0o600); e != nil {
+			cleanup()
+			return nil, nil, noop, fmt.Errorf("zsh init: write .zshrc: %w", e)
+		}
+		return nil, []string{"ZDOTDIR=" + zdotdir}, cleanup, nil
+
+	case strings.HasSuffix(base, "bash"):
+		f, e := os.CreateTemp("", "grimoire-bashrc-*")
+		if e != nil {
+			return nil, nil, noop, fmt.Errorf("bash init: createtemp: %w", e)
+		}
+		cleanup = func() { _ = os.Remove(f.Name()) }
+
+		// init file: source the operator's real .bashrc then Grimoire hooks.
+		content := fmt.Sprintf(
+			"[[ -f \"${HOME}/.bashrc\" ]] && source \"${HOME}/.bashrc\"\n"+
+				"# --- Grimoire hooks (auto-injected by grim shell) ---\n"+
+				"%s\n",
+			bashHook,
+		)
+		if _, e := f.WriteString(content); e != nil {
+			_ = f.Close()
+			cleanup()
+			return nil, nil, noop, fmt.Errorf("bash init: write init file: %w", e)
+		}
+		_ = f.Close()
+		return []string{"--init-file", f.Name()}, nil, cleanup, nil
+
+	default:
+		// sh, fish, etc. — no auto-source support; hooks must be sourced manually.
+		return nil, nil, noop, nil
+	}
 }
 
 // registerPane calls POST /api/register on the daemon.
