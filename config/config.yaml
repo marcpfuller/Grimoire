@@ -18,6 +18,12 @@ scrub:
   #   pattern: "AKIA[0-9A-Z]{16}"
   #   replacement: "[REDACTED_AWS_KEY]"
 
+cast:
+  # Directory where .cast files are written by `grim cast`.
+  # Relative paths resolve from the daemon's working directory.
+  # Defaults to a `casts/` subdirectory next to db.path when empty.
+  dir: ""
+
 log:
   # Directory where grimoire.log is written. Relative paths resolve from the
   # daemon's working directory. Use an absolute path for predictability.

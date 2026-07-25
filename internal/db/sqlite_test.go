@@ -28,10 +28,10 @@ func TestCreatePane(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-001", "proj-gw1", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-001", "proj-gw1", 1000, 220, 50))
 
 	// Duplicate should fail (PRIMARY KEY constraint).
-	assert.Error(t, s.CreatePane(ctx, "pane-001", "proj-gw1", 2000), "expected error on duplicate pane id")
+	assert.Error(t, s.CreatePane(ctx, "pane-001", "proj-gw1", 2000, 220, 50), "expected error on duplicate pane id")
 }
 
 func TestUpsertPane(t *testing.T) {
@@ -39,10 +39,10 @@ func TestUpsertPane(t *testing.T) {
 	ctx := context.Background()
 
 	// First call creates the row.
-	require.NoError(t, s.UpsertPane(ctx, "pane-001", "proj-gw1", 1000))
+	require.NoError(t, s.UpsertPane(ctx, "pane-001", "proj-gw1", 1000, 220, 50))
 
 	// Second call (daemon restart scenario) must not error.
-	require.NoError(t, s.UpsertPane(ctx, "pane-001", "proj-gw1", 2000), "upsert on existing pane must succeed")
+	require.NoError(t, s.UpsertPane(ctx, "pane-001", "proj-gw1", 2000, 220, 50), "upsert on existing pane must succeed")
 }
 
 // --- Commands ---
@@ -51,7 +51,7 @@ func TestCreateCommand(t *testing.T) {
 	t.Run("sequence_increments", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 
 		cases := []struct {
 			shortID string
@@ -77,7 +77,7 @@ func TestCreateCommand(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 		for _, pane := range []string{"pane-X", "pane-Y"} {
-			require.NoError(t, s.CreatePane(ctx, pane, "proj-gw1", 1000))
+			require.NoError(t, s.CreatePane(ctx, pane, "proj-gw1", 1000, 220, 50))
 		}
 
 		require.NoError(t, s.ReserveShortID(ctx, "pane-X", "xxx0001"))
@@ -96,7 +96,7 @@ func TestCreateCommand(t *testing.T) {
 	t.Run("duplicate_short_id", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 
 		// Reserve, create — short_id is now permanently in commands.
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "dup0001"))
@@ -109,11 +109,11 @@ func TestCreateCommand(t *testing.T) {
 	t.Run("no_reservation_returns_not_found", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 
 		// CreateCommand without a prior ReserveShortID must fail.
 		err := s.CreateCommand(ctx, &db.Command{PaneID: "pane-A", Command: "ls", StartedAt: 1000})
-		assert.ErrorIs(t, err, db.ErrNotFound)
+		require.ErrorIs(t, err, db.ErrNotFound)
 	})
 
 	t.Run("foreign_key_enforced", func(t *testing.T) {
@@ -130,7 +130,7 @@ func TestGetCommandByShortID(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "abc1234"))
 	cmd := &db.Command{PaneID: "pane-A", Command: "uname -a", StartedAt: 5000}
 	require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -144,7 +144,7 @@ func TestGetCommandByShortID(t *testing.T) {
 
 	t.Run("not_found", func(t *testing.T) {
 		_, err := s.GetCommandByShortID(ctx, "missing")
-		assert.ErrorIs(t, err, db.ErrNotFound)
+		require.ErrorIs(t, err, db.ErrNotFound)
 	})
 }
 
@@ -152,7 +152,7 @@ func TestFinalizeCommand(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "fin0001"))
 	cmd := &db.Command{PaneID: "pane-A", Command: "sleep 1", StartedAt: 1000}
 	require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -170,7 +170,7 @@ func TestFinalizeCommand(t *testing.T) {
 
 	t.Run("not_found", func(t *testing.T) {
 		err := s.FinalizeCommand(ctx, "ghost", 9999, 1)
-		assert.ErrorIs(t, err, db.ErrNotFound)
+		require.ErrorIs(t, err, db.ErrNotFound)
 	})
 }
 
@@ -178,7 +178,7 @@ func TestMarkCommandSynced(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "syn0001"))
 	cmd := &db.Command{PaneID: "pane-A", Command: "id", StartedAt: 1000}
 	require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -193,7 +193,7 @@ func TestMarkCommandSynced(t *testing.T) {
 
 	t.Run("not_found", func(t *testing.T) {
 		err := s.MarkCommandSynced(ctx, 99999)
-		assert.ErrorIs(t, err, db.ErrNotFound)
+		require.ErrorIs(t, err, db.ErrNotFound)
 	})
 }
 
@@ -201,8 +201,8 @@ func TestListCommandsByPane(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
-	require.NoError(t, s.CreatePane(ctx, "pane-B", "proj-gw1", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
+	require.NoError(t, s.CreatePane(ctx, "pane-B", "proj-gw1", 1000, 220, 50))
 
 	cmds := []*db.Command{
 		{PaneID: "pane-A", Command: "whoami", StartedAt: 1000},
@@ -237,7 +237,7 @@ func TestListCommandsByPane(t *testing.T) {
 	})
 
 	t.Run("empty_pane_returns_nil_slice", func(t *testing.T) {
-		require.NoError(t, s.CreatePane(ctx, "pane-empty", "proj-gw1", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-empty", "proj-gw1", 1000, 220, 50))
 		got, err := s.ListCommandsByPane(ctx, "pane-empty")
 		require.NoError(t, err)
 		assert.Empty(t, got)
@@ -248,7 +248,7 @@ func TestListUnsynced(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 
 	// cmd1: finalized, unsynced — should appear.
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "u000001"))
@@ -278,7 +278,7 @@ func TestShortIDExists(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 
 	// "exists1" permanently in commands.
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "exists1"))
@@ -306,7 +306,7 @@ func TestDeregisterPane(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "dreg001"))
 
 	exists, err := s.ShortIDExists(ctx, "dreg001")
@@ -328,7 +328,7 @@ func TestProjectIDPropagation(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 
-	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-abc", 1000))
+	require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-abc", 1000, 220, 50))
 	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "prj0001"))
 	cmd := &db.Command{PaneID: "pane-A", Command: "whoami", StartedAt: 1000}
 	require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -346,7 +346,7 @@ func TestReserveShortID(t *testing.T) {
 	t.Run("conflict_with_committed_command", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "col0001"))
 		require.NoError(t, s.CreateCommand(ctx, &db.Command{PaneID: "pane-A", Command: "ls", StartedAt: 1000}))
@@ -359,7 +359,7 @@ func TestReserveShortID(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 		for _, p := range []string{"pane-A", "pane-B"} {
-			require.NoError(t, s.CreatePane(ctx, p, "proj-gw1", 1000))
+			require.NoError(t, s.CreatePane(ctx, p, "proj-gw1", 1000, 220, 50))
 		}
 
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "shared1"))
@@ -371,7 +371,7 @@ func TestReserveShortID(t *testing.T) {
 	t.Run("same_pane_can_refresh", func(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
-		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 
 		// First reservation.
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "old0001"))
@@ -398,7 +398,7 @@ func TestOutputChunks(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "out0001"))
 		cmd := &db.Command{PaneID: "pane-A", Command: "ls -la", StartedAt: 1000}
 		require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -432,7 +432,7 @@ func TestOutputChunks(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "emp0001"))
 		cmd := &db.Command{PaneID: "pane-A", Command: "ls", StartedAt: 1000}
 		require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -450,7 +450,7 @@ func TestTags(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-A", "proj-gw1", 1000, 220, 50))
 		require.NoError(t, s.ReserveShortID(ctx, "pane-A", "tag0001"))
 		cmd := &db.Command{PaneID: "pane-A", Command: "net view", StartedAt: 1000}
 		require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -481,7 +481,7 @@ func TestTags(t *testing.T) {
 		s := openTestStore(t)
 		ctx := context.Background()
 
-		require.NoError(t, s.CreatePane(ctx, "pane-B", "proj-gw2", 1000))
+		require.NoError(t, s.CreatePane(ctx, "pane-B", "proj-gw2", 1000, 220, 50))
 		require.NoError(t, s.ReserveShortID(ctx, "pane-B", "dup0001"))
 		cmd := &db.Command{PaneID: "pane-B", Command: "whoami", StartedAt: 1000}
 		require.NoError(t, s.CreateCommand(ctx, cmd))
@@ -501,7 +501,7 @@ func TestMigrations(t *testing.T) {
 		s := openTestStore(t)
 		ver, err := db.UserVersionForTest(s)
 		require.NoError(t, err)
-		assert.Equal(t, latest, ver, "fresh DB must reach the latest migration version")
+		require.Equal(t, latest, ver, "fresh DB must reach the latest migration version")
 	})
 
 	t.Run("idempotent_reopen", func(t *testing.T) {
@@ -522,8 +522,8 @@ func TestMigrations(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, s2.Close())
 
-		assert.Equal(t, ver1, ver2, "re-opening must not change user_version")
-		assert.Equal(t, latest, ver2)
+		require.Equal(t, ver1, ver2, "re-opening must not change user_version")
+		require.Equal(t, latest, ver2)
 	})
 
 	t.Run("skips_already_applied", func(t *testing.T) {
@@ -556,7 +556,7 @@ func TestMigrations(t *testing.T) {
 		require.NoError(t, err)
 		require.NoError(t, s2.Close())
 
-		assert.Equal(t, latest, ver, "pending migration must be applied on re-open")
+		require.Equal(t, latest, ver, "pending migration must be applied on re-open")
 	})
 
 	t.Run("db_file_created", func(t *testing.T) {
@@ -570,10 +570,121 @@ func TestMigrations(t *testing.T) {
 		require.NoError(t, s.Close())
 
 		_, err = os.Stat(path)
-		assert.NoError(t, err, "Open must create the DB file")
+		require.NoError(t, err, "Open must create the DB file")
 	})
 }
 
 func itoa(n int) string {
 	return fmt.Sprintf("%d", n)
+}
+
+// --- GetPane ---
+
+func TestGetPane(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	t.Run("not_found", func(t *testing.T) {
+		_, err := s.GetPane(ctx, "missing-pane")
+		require.ErrorIs(t, err, db.ErrNotFound)
+	})
+
+	t.Run("found", func(t *testing.T) {
+		require.NoError(t, s.CreatePane(ctx, "pane-get-001", "proj-get", 5000, 190, 40))
+		p, err := s.GetPane(ctx, "pane-get-001")
+		require.NoError(t, err)
+		assert.Equal(t, "pane-get-001", p.ID)
+		assert.Equal(t, "proj-get", p.ProjectID)
+		assert.Equal(t, int64(5000), p.CreatedAt)
+		assert.Equal(t, 190, p.Width)
+		assert.Equal(t, 40, p.Height)
+	})
+
+	t.Run("defaults_on_migration", func(t *testing.T) {
+		// Panes created with default width/height (220/50) must be retrievable.
+		require.NoError(t, s.CreatePane(ctx, "pane-defaults", "proj-get", 1000, 220, 50))
+		p, err := s.GetPane(ctx, "pane-defaults")
+		require.NoError(t, err)
+		assert.Equal(t, 220, p.Width)
+		assert.Equal(t, 50, p.Height)
+	})
+}
+
+// --- GetCommandsByPaneSeqRange ---
+
+func TestGetCommandsByPaneSeqRange(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreatePane(ctx, "pane-seq", "proj-seq", 1000, 220, 50))
+
+	require.NoError(t, s.ReserveShortID(ctx, "pane-seq", "seq0001"))
+	cmd1 := &db.Command{PaneID: "pane-seq", Command: "ls", StartedAt: 1000}
+	require.NoError(t, s.CreateCommand(ctx, cmd1))
+
+	require.NoError(t, s.ReserveShortID(ctx, "pane-seq", "seq0002"))
+	cmd2 := &db.Command{PaneID: "pane-seq", Command: "pwd", StartedAt: 2000}
+	require.NoError(t, s.CreateCommand(ctx, cmd2))
+
+	require.NoError(t, s.ReserveShortID(ctx, "pane-seq", "seq0003"))
+	cmd3 := &db.Command{PaneID: "pane-seq", Command: "whoami", StartedAt: 3000}
+	require.NoError(t, s.CreateCommand(ctx, cmd3))
+
+	t.Run("full_range", func(t *testing.T) {
+		cmds, err := s.GetCommandsByPaneSeqRange(ctx, "pane-seq", cmd1.Seq, cmd3.Seq)
+		require.NoError(t, err)
+		require.Len(t, cmds, 3)
+		assert.Equal(t, "ls", cmds[0].Command)
+		assert.Equal(t, "whoami", cmds[2].Command)
+	})
+
+	t.Run("partial_range", func(t *testing.T) {
+		cmds, err := s.GetCommandsByPaneSeqRange(ctx, "pane-seq", cmd2.Seq, cmd3.Seq)
+		require.NoError(t, err)
+		require.Len(t, cmds, 2)
+		assert.Equal(t, "pwd", cmds[0].Command)
+	})
+
+	t.Run("single", func(t *testing.T) {
+		cmds, err := s.GetCommandsByPaneSeqRange(ctx, "pane-seq", cmd2.Seq, cmd2.Seq)
+		require.NoError(t, err)
+		require.Len(t, cmds, 1)
+		assert.Equal(t, "pwd", cmds[0].Command)
+	})
+
+	t.Run("empty_range", func(t *testing.T) {
+		cmds, err := s.GetCommandsByPaneSeqRange(ctx, "pane-seq", 9999, 9999)
+		require.NoError(t, err)
+		require.Empty(t, cmds)
+	})
+
+	t.Run("wrong_pane", func(t *testing.T) {
+		cmds, err := s.GetCommandsByPaneSeqRange(ctx, "other-pane", cmd1.Seq, cmd3.Seq)
+		require.NoError(t, err)
+		require.Empty(t, cmds)
+	})
+}
+
+// --- Migration v2/v3 width/height ---
+
+func TestMigrationV2V3WidthHeight(t *testing.T) {
+	// Verify migration history: a fresh DB is created at the latest version,
+	// which includes width/height columns in panes.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "migration_v2v3.db")
+
+	s, err := db.Open(path)
+	require.NoError(t, err)
+	defer s.Close() //nolint:errcheck
+
+	ver, err := db.UserVersionForTest(s)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, ver, 3, "fresh DB must be at version 3+")
+
+	ctx := context.Background()
+	require.NoError(t, s.CreatePane(ctx, "pane-m3", "proj-m3", 1000, 160, 48))
+	p, err := s.GetPane(ctx, "pane-m3")
+	require.NoError(t, err)
+	assert.Equal(t, 160, p.Width)
+	assert.Equal(t, 48, p.Height)
 }

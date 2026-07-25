@@ -17,6 +17,8 @@ type Pane struct {
 	ID        string
 	ProjectID string // Ghostwriter project ID this pane belongs to
 	CreatedAt int64  // Unix ms
+	Width     int    // terminal columns at session start
+	Height    int    // terminal rows at session start
 }
 
 // Command represents a single executed command within a pane.
@@ -57,8 +59,9 @@ type Store interface {
 	// succeeds if already registered. This makes re-registration safe when the
 	// daemon restarts mid-session and the shell still holds its original
 	// GRIMOIRE_PANE_ID.
-	UpsertPane(ctx context.Context, paneID string, projectID string, createdAt int64) error
-	CreatePane(ctx context.Context, paneID string, projectID string, createdAt int64) error
+	UpsertPane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error
+	CreatePane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error
+	GetPane(ctx context.Context, paneID string) (*Pane, error)
 	// DeregisterPane removes the pending short ID reservation for paneID so
 	// the ID is immediately available to other panes. The pane row and all
 	// its commands are retained for historical purposes.
@@ -80,6 +83,7 @@ type Store interface {
 	CreateCommand(ctx context.Context, cmd *Command) error
 	GetCommandByShortID(ctx context.Context, shortID string) (*Command, error)
 	ListCommandsByPane(ctx context.Context, paneID string) ([]*Command, error)
+	GetCommandsByPaneSeqRange(ctx context.Context, paneID string, firstSeq, lastSeq int64) ([]*Command, error)
 	ListUnsynced(ctx context.Context) ([]*Command, error)
 	FinalizeCommand(ctx context.Context, shortID string, endedAt int64, exitCode int) error
 	MarkCommandSynced(ctx context.Context, commandID int64) error

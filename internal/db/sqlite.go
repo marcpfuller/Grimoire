@@ -113,6 +113,11 @@ func (s *sqliteStore) Close() error {
 type migration struct {
 	version int
 	sql     string
+	// fn is an optional Go function that runs instead of sql.
+	// Use fn when the migration must be idempotent at the Go level because
+	// the embedded SQLite driver does not support conditional DDL syntax
+	// (e.g. ALTER TABLE ADD COLUMN IF NOT EXISTS is unsupported).
+	fn func(*sql.DB) error
 }
 
 // migrations is the ordered list of incremental schema changes applied after
@@ -123,11 +128,57 @@ type migration struct {
 //
 //	1: enforce UNIQUE(command_id, label) on tags for databases created before
 //	   the constraint was added to the base schema DDL.
+//	2: add width column to panes for .cast terminal dimension metadata.
+//	   DEFAULT 220 matches the Ghostwriter recommended terminal width.
+//	3: add height column to panes for .cast terminal dimension metadata.
+//	   DEFAULT 50 matches the Ghostwriter recommended terminal height.
 var migrations = []migration{
 	{
 		version: 1,
 		sql:     `CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_command_label ON tags(command_id, label)`,
 	},
+	{
+		version: 2,
+		fn:      addColumnIfMissing("panes", "width", "INTEGER NOT NULL DEFAULT 220"),
+	},
+	{
+		version: 3,
+		fn:      addColumnIfMissing("panes", "height", "INTEGER NOT NULL DEFAULT 50"),
+	},
+}
+
+// addColumnIfMissing returns a migration function that adds column to table
+// only when the column does not already exist, checked via PRAGMA table_info.
+// This keeps the migration idempotent when user_version is manually rewound.
+//
+// table, column, and definition are hardcoded migration identifiers — not user input.
+func addColumnIfMissing(table, column, definition string) func(*sql.DB) error {
+	return func(db *sql.DB) error {
+		rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table)) //nolint:gosec
+		if err != nil {
+			return fmt.Errorf("PRAGMA table_info(%s): %w", table, err)
+		}
+		defer rows.Close() //nolint:errcheck
+		for rows.Next() {
+			var cid int
+			var name, typ string
+			var notNull int
+			var dfltVal any
+			var pk int
+			if err := rows.Scan(&cid, &name, &typ, &notNull, &dfltVal, &pk); err != nil {
+				return fmt.Errorf("scan table_info: %w", err)
+			}
+			if name == column {
+				return nil // already exists, nothing to do
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		// G201: table and column are hardcoded identifiers — no injection risk.
+		_, err = db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, definition)) //nolint:gosec
+		return err
+	}
 }
 
 // applyMigrations reads PRAGMA user_version and runs any pending migrations in
@@ -147,8 +198,14 @@ func applyMigrations(db *sql.DB) error {
 		if ver >= m.version {
 			continue
 		}
-		if _, err := db.Exec(m.sql); err != nil {
-			return fmt.Errorf("migration %d: %w", m.version, err)
+		if m.fn != nil {
+			if err := m.fn(db); err != nil {
+				return fmt.Errorf("migration %d: %w", m.version, err)
+			}
+		} else if m.sql != "" {
+			if _, err := db.Exec(m.sql); err != nil {
+				return fmt.Errorf("migration %d: %w", m.version, err)
+			}
 		}
 		// G201: m.version is a hardcoded int — no injection risk.
 		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, m.version)); err != nil { //nolint:gosec
@@ -168,20 +225,35 @@ func applyMigrations(db *sql.DB) error {
 // INSERT OR IGNORE: if the pane is already registered (e.g. daemon restart),
 // the existing row — including its projectID — is preserved unchanged.
 // Project IDs are not expected to change mid-session.
-func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, projectID string, createdAt int64) error {
+func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO panes (id, project_id, created_at) VALUES (?, ?, ?)`,
-		paneID, projectID, createdAt,
+		`INSERT OR IGNORE INTO panes (id, project_id, created_at, width, height) VALUES (?, ?, ?, ?, ?)`,
+		paneID, projectID, createdAt, width, height,
 	)
 	return err
 }
 
-func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, projectID string, createdAt int64) error {
+func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO panes (id, project_id, created_at) VALUES (?, ?, ?)`,
-		paneID, projectID, createdAt,
+		`INSERT INTO panes (id, project_id, created_at, width, height) VALUES (?, ?, ?, ?, ?)`,
+		paneID, projectID, createdAt, width, height,
 	)
 	return err
+}
+
+func (s *sqliteStore) GetPane(ctx context.Context, paneID string) (*Pane, error) {
+	p := &Pane{}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id, project_id, created_at, width, height FROM panes WHERE id = ?`,
+		paneID,
+	).Scan(&p.ID, &p.ProjectID, &p.CreatedAt, &p.Width, &p.Height)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // DeregisterPane removes the pending short ID reservation for paneID so the
@@ -344,6 +416,24 @@ func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cm
 		`SELECT id, short_id, pane_id, project_id, seq, command, started_at, ended_at, exit_code, synced_gw
 		 FROM commands WHERE pane_id = ? ORDER BY seq`,
 		paneID,
+	)
+	if qErr != nil {
+		return nil, qErr
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+	cmds, err = scanCommands(rows)
+	return
+}
+
+func (s *sqliteStore) GetCommandsByPaneSeqRange(ctx context.Context, paneID string, firstSeq, lastSeq int64) (cmds []*Command, err error) {
+	rows, qErr := s.db.QueryContext(ctx,
+		`SELECT id, short_id, pane_id, project_id, seq, command, started_at, ended_at, exit_code, synced_gw
+                 FROM commands WHERE pane_id = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
+		paneID, firstSeq, lastSeq,
 	)
 	if qErr != nil {
 		return nil, qErr

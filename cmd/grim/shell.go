@@ -15,6 +15,8 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/term"
+
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
@@ -79,7 +81,13 @@ func runShell(cmd *cobra.Command, _ []string) error {
 
 	// Register this pane with the daemon. Fails fast if the daemon is not
 	// running — shell hooks require the daemon's HTTP API to be available.
-	if err := registerPane(daemonAddr, paneID, projectID); err != nil {
+	width, height, sizeErr := term.GetSize(int(os.Stdin.Fd()))
+	if sizeErr != nil {
+		// Fall back to sensible defaults when stdin is not a terminal
+		// (e.g. testing or piped input).
+		width, height = 220, 50
+	}
+	if err := registerPane(daemonAddr, paneID, projectID, width, height); err != nil {
 		return fmt.Errorf("register pane: %w", err)
 	}
 
@@ -250,10 +258,12 @@ func watchDaemon(ctx context.Context, addr string) {
 }
 
 // registerPane calls POST /api/register on the daemon.
-func registerPane(addr, paneID, projectID string) error {
-	body, _ := json.Marshal(map[string]string{
+func registerPane(addr, paneID, projectID string, width, height int) error {
+	body, _ := json.Marshal(map[string]any{
 		"pane_id":    paneID,
 		"project_id": projectID,
+		"width":      width,
+		"height":     height,
 	})
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Post(addr+"/api/register", "application/json", bytes.NewReader(body))

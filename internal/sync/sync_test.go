@@ -62,7 +62,7 @@ func TestSyncer_RunOnce_success(t *testing.T) {
 
 	newSyncer(t, store, pusher).RunOnce(context.Background())
 
-	assert.Equal(t, cmds, pusher.pushed, "both commands must be pushed")
+	require.Equal(t, cmds, pusher.pushed, "both commands must be pushed")
 }
 
 func TestSyncer_RunOnce_empty_batch(t *testing.T) {
@@ -72,7 +72,7 @@ func TestSyncer_RunOnce_empty_batch(t *testing.T) {
 
 	newSyncer(t, store, pusher).RunOnce(context.Background())
 
-	assert.Empty(t, pusher.pushed, "nothing to push")
+	require.Empty(t, pusher.pushed, "nothing to push")
 }
 
 func TestSyncer_RunOnce_list_failure(t *testing.T) {
@@ -82,7 +82,7 @@ func TestSyncer_RunOnce_list_failure(t *testing.T) {
 
 	newSyncer(t, store, pusher).RunOnce(context.Background())
 
-	assert.Empty(t, pusher.pushed, "no push when ListUnsynced fails")
+	require.Empty(t, pusher.pushed, "no push when ListUnsynced fails")
 }
 
 func TestSyncer_RunOnce_transient_push_failure(t *testing.T) {
@@ -253,5 +253,5 @@ func TestAuthError_implements_error(t *testing.T) {
 	ae := &grimsync.AuthError{Err: inner}
 	require.ErrorContains(t, ae, "401")
 	require.ErrorAs(t, ae, new(*grimsync.AuthError))
-	assert.ErrorIs(t, ae.Unwrap(), inner)
+	require.ErrorIs(t, ae.Unwrap(), inner)
 }

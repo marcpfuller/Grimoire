@@ -44,8 +44,8 @@ func TestInstallErrorIfAlreadyInstalled(t *testing.T) {
 	m := service.NewForTest("/bin/grim", "/tmp/config.yaml", plistPath, "/tmp/grimoire.log")
 	err := m.InstallUnitOnly()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "already installed")
-	assert.Contains(t, err.Error(), "uninstall")
+	require.Contains(t, err.Error(), "already installed")
+	require.Contains(t, err.Error(), "uninstall")
 }
 
 func TestInstallWritesPlist(t *testing.T) {
@@ -73,12 +73,12 @@ func TestTailFile(t *testing.T) {
 
 	result := service.TailFile(path, 10)
 	resultLines := strings.Split(strings.TrimRight(result, "\n"), "\n")
-	assert.Len(t, resultLines, 10, "should return exactly 10 lines")
+	require.Len(t, resultLines, 10, "should return exactly 10 lines")
 }
 
 func TestTailFileEmpty(t *testing.T) {
 	result := service.TailFile("/nonexistent/path/grimoire.log", 10)
-	assert.Empty(t, result, "missing file should return empty string")
+	require.Empty(t, result, "missing file should return empty string")
 }
 
 func TestPrintStatus(t *testing.T) {

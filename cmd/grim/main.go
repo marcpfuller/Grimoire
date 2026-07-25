@@ -40,6 +40,7 @@ func init() {
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(tagCmd)
 	rootCmd.AddCommand(serviceCmd)
+	rootCmd.AddCommand(castCmd)
 }
 
 // initConfig reads the config file and sets Viper defaults. Called by
@@ -68,6 +69,7 @@ func initConfig() error {
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("log.max_mb", 50)
 	viper.SetDefault("log.max_backups", 5)
+	viper.SetDefault("cast.dir", "")
 
 	if err := viper.ReadInConfig(); err != nil {
 		var notFound viper.ConfigFileNotFoundError
