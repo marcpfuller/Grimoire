@@ -2,6 +2,9 @@ package db_test
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -487,4 +490,90 @@ func TestTags(t *testing.T) {
 		err := s.AddTag(ctx, cmd.ID, "Credential Access", 3000)
 		assert.ErrorIs(t, err, db.ErrDuplicateTag, "second identical label must return ErrDuplicateTag")
 	})
+}
+
+// --- Migrations ---
+
+func TestMigrations(t *testing.T) {
+	latest := db.LatestVersionForTest()
+
+	t.Run("fresh_db_at_latest_version", func(t *testing.T) {
+		s := openTestStore(t)
+		ver, err := db.UserVersionForTest(s)
+		require.NoError(t, err)
+		assert.Equal(t, latest, ver, "fresh DB must reach the latest migration version")
+	})
+
+	t.Run("idempotent_reopen", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "test.db")
+
+		// First open: applies schema + migrations.
+		s1, err := db.Open(path)
+		require.NoError(t, err)
+		ver1, err := db.UserVersionForTest(s1)
+		require.NoError(t, err)
+		require.NoError(t, s1.Close())
+
+		// Second open: migrations already applied — must not error or change version.
+		s2, err := db.Open(path)
+		require.NoError(t, err)
+		ver2, err := db.UserVersionForTest(s2)
+		require.NoError(t, err)
+		require.NoError(t, s2.Close())
+
+		assert.Equal(t, ver1, ver2, "re-opening must not change user_version")
+		assert.Equal(t, latest, ver2)
+	})
+
+	t.Run("skips_already_applied", func(t *testing.T) {
+		// Simulate a DB that was already at version latest-1 by opening a
+		// fresh file, then directly setting user_version one step back and
+		// re-opening — the migration must advance it to latest again without error.
+		if latest < 1 {
+			t.Skip("no migrations to skip")
+		}
+
+		dir := t.TempDir()
+		path := filepath.Join(dir, "test.db")
+
+		// Bootstrap at latest (normal open).
+		s1, err := db.Open(path)
+		require.NoError(t, err)
+		require.NoError(t, s1.Close())
+
+		// Wind back to latest-1 so one migration is pending on re-open.
+		rawDB, err := db.OpenRawForTest(path)
+		require.NoError(t, err)
+		_, err = rawDB.Exec("PRAGMA user_version = " + itoa(latest-1))
+		require.NoError(t, err, "set user_version to latest-1")
+		require.NoError(t, rawDB.Close())
+
+		// Re-open: should apply the pending migration and advance to latest.
+		s2, err := db.Open(path)
+		require.NoError(t, err)
+		ver, err := db.UserVersionForTest(s2)
+		require.NoError(t, err)
+		require.NoError(t, s2.Close())
+
+		assert.Equal(t, latest, ver, "pending migration must be applied on re-open")
+	})
+
+	t.Run("db_file_created", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "new.db")
+		_, err := os.Stat(path)
+		require.True(t, os.IsNotExist(err), "file should not exist before Open")
+
+		s, err := db.Open(path)
+		require.NoError(t, err)
+		require.NoError(t, s.Close())
+
+		_, err = os.Stat(path)
+		assert.NoError(t, err, "Open must create the DB file")
+	})
+}
+
+func itoa(n int) string {
+	return fmt.Sprintf("%d", n)
 }

@@ -94,11 +94,69 @@ func Open(path string) (Store, error) {
 		return nil, fmt.Errorf("db: apply schema: %w", err)
 	}
 
+	if err = applyMigrations(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("db: migrate: %w", err)
+	}
+
 	return &sqliteStore{db: db}, nil
 }
 
 func (s *sqliteStore) Close() error {
 	return s.db.Close()
+}
+
+// --- Migrations ---
+
+// migration is a single forward-only schema change identified by a version
+// number stored in PRAGMA user_version.
+type migration struct {
+	version int
+	sql     string
+}
+
+// migrations is the ordered list of incremental schema changes applied after
+// the base schema. Append new entries at the end — never edit or reorder
+// existing ones.
+//
+// VERSION HISTORY:
+//
+//	1: enforce UNIQUE(command_id, label) on tags for databases created before
+//	   the constraint was added to the base schema DDL.
+var migrations = []migration{
+	{
+		version: 1,
+		sql:     `CREATE UNIQUE INDEX IF NOT EXISTS idx_tags_command_label ON tags(command_id, label)`,
+	},
+}
+
+// applyMigrations reads PRAGMA user_version and runs any pending migrations in
+// order, advancing user_version after each one. The version integer is stored
+// in the SQLite file header — no schema table is required.
+//
+// PRAGMA user_version = N does not support the ? placeholder; the integer is
+// formatted directly into the statement. This is safe because migration.version
+// is a hardcoded int, not user-supplied input.
+func applyMigrations(db *sql.DB) error {
+	var ver int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&ver); err != nil {
+		return fmt.Errorf("read user_version: %w", err)
+	}
+
+	for _, m := range migrations {
+		if ver >= m.version {
+			continue
+		}
+		if _, err := db.Exec(m.sql); err != nil {
+			return fmt.Errorf("migration %d: %w", m.version, err)
+		}
+		// G201: m.version is a hardcoded int — no injection risk.
+		if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, m.version)); err != nil { //nolint:gosec
+			return fmt.Errorf("migration %d: advance version: %w", m.version, err)
+		}
+		ver = m.version
+	}
+	return nil
 }
 
 // --- Panes ---
