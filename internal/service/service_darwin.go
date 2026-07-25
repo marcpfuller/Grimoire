@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	launchdLabel   = "com.grimoire.daemon"
+	launchdLabel     = "com.grimoire.daemon"
 	launchdPlistName = launchdLabel + ".plist"
 )
 
@@ -163,5 +163,3 @@ func (m *darwinManager) plistContent() string {
 	b.WriteString("</dict>\n</plist>\n")
 	return b.String()
 }
-
-

@@ -17,10 +17,10 @@ const systemdServiceName = "grimoire"
 
 // linuxManager implements Manager using a systemd user service.
 type linuxManager struct {
-	binPath     string // path to the grim binary
-	configPath  string // canonical config: ~/.config/grimoire/config.yaml
-	unitPath    string // ~/.config/systemd/user/grimoire.service
-	logPath     string // ~/.config/grimoire/grimoire.log
+	binPath    string // path to the grim binary
+	configPath string // canonical config: ~/.config/grimoire/config.yaml
+	unitPath   string // ~/.config/systemd/user/grimoire.service
+	logPath    string // ~/.config/grimoire/grimoire.log
 }
 
 // New returns a Manager for Linux systemd.
