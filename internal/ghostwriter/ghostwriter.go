@@ -87,6 +87,9 @@ func NewWithHTTP(store db.Store, cfg Config, hc *http.Client, logger *slog.Logge
 // accessible to the configured service token. The result is cached and reused
 // by every subsequent PushCommand call.
 //
+// Init must complete before any calls to PushCommand. Concurrent invocations
+// of Init and PushCommand are not safe.
+//
 // Init is a no-op if OplogID was set explicitly in Config (useful for tests).
 // It returns *grimsync.AuthError for HTTP 401/403 or Hasura access-denied.
 func (c *Client) Init(ctx context.Context) error {
@@ -153,7 +156,7 @@ func (c *Client) Init(ctx context.Context) error {
 		}
 		return nil
 	default:
-		return fmt.Errorf("ghostwriter: token grants access to %d oplogs; set oplog_id explicitly", len(result.Data.Oplogs))
+		return fmt.Errorf("ghostwriter: token grants access to %d oplogs; use a dedicated OPLOG_RW token scoped to a single oplog", len(result.Data.Oplogs))
 	}
 }
 

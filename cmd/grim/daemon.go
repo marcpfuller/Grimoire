@@ -154,8 +154,7 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	return nil
 }
 
-// noopPusher is a stub Ghostwriter pusher used until internal/ghostwriter
-// implements grimsync.Pusher. Replaces this once the GW client is built.
+// noopPusher is used when Ghostwriter credentials are not configured.
 type noopPusher struct{}
 
 func (n *noopPusher) PushCommand(_ context.Context, _ *db.Command) error { return nil }

@@ -298,6 +298,20 @@ func TestInit_AuthError_ReturnsAuthError(t *testing.T) {
 	assert.ErrorAs(t, err, &authErr)
 }
 
+func TestInit_HasuraAccessDenied_ReturnsAuthError(t *testing.T) {
+	body := `{"errors":[{"message":"access-denied","extensions":{"code":"access-denied"}}]}`
+	srv, _ := newServer(t, http.StatusOK, body)
+
+	ms := dbmocks.NewMockStore(t)
+	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_tok"}
+	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+
+	err := client.Init(context.Background())
+	require.Error(t, err)
+	var authErr *grimsync.AuthError
+	assert.ErrorAs(t, err, &authErr)
+}
+
 func TestInit_NoopWhenOplogIDPreset(t *testing.T) {
 	// When OplogID is set in Config, Init must not make any HTTP calls.
 	callCount := 0
