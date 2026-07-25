@@ -42,8 +42,6 @@ func StripANSI(s string) string {
 }
 
 // Config holds the connection parameters for a Ghostwriter instance.
-// All fields are required; PushCommand returns an error if URL, Token, or
-// OplogID are zero/empty.
 type Config struct {
 	// URL is the Ghostwriter base URL, e.g. "https://ghostwriter.example.com".
 	// PushCommand appends "/v1/graphql" to reach the Hasura endpoint directly.
@@ -51,33 +49,112 @@ type Config struct {
 	// Token is the Ghostwriter service token (opaque, not a JWT). It must have
 	// the OPLOG_RW preset on the target oplog. Passed as "Bearer <token>".
 	Token string
-	// OplogID is the integer primary key of the Ghostwriter Oplog to write to.
+	// OplogID overrides auto-discovery when non-zero. Leave zero in production;
+	// the daemon calls Init to discover the oplog from the token's scope.
+	// Useful in tests to skip the discovery round-trip.
 	OplogID int
 }
 
 // Client implements grimsync.Pusher against a live Ghostwriter instance.
 type Client struct {
-	store  db.Store
-	cfg    Config
-	http   *http.Client
-	logger *slog.Logger
+	store           db.Store
+	cfg             Config
+	http            *http.Client
+	logger          *slog.Logger
+	resolvedOplogID int // set by New/NewWithHTTP (cfg.OplogID) or discovered by Init
 }
 
-// New returns a ready-to-use Client. An http.Client with a 30-second timeout
-// is used by default; inject a custom one by calling NewWithHTTP.
+// New returns a Client. Call Init on the returned client before pushing commands.
+// An http.Client with a 30-second timeout is used by default; inject a custom
+// one by calling NewWithHTTP.
 func New(store db.Store, cfg Config, logger *slog.Logger) *Client {
-	return &Client{
-		store:  store,
-		cfg:    cfg,
-		http:   &http.Client{Timeout: 30 * time.Second},
-		logger: logger,
-	}
+	return NewWithHTTP(store, cfg, &http.Client{Timeout: 30 * time.Second}, logger)
 }
 
 // NewWithHTTP is like New but accepts a caller-supplied http.Client, useful
 // for tests that inject an httptest.Server transport.
 func NewWithHTTP(store db.Store, cfg Config, hc *http.Client, logger *slog.Logger) *Client {
-	return &Client{store: store, cfg: cfg, http: hc, logger: logger}
+	return &Client{
+		store:           store,
+		cfg:             cfg,
+		http:            hc,
+		logger:          logger,
+		resolvedOplogID: cfg.OplogID, // pre-populate; Init is a no-op when nonzero
+	}
+}
+
+// Init resolves the oplog ID by querying Ghostwriter for the single oplog
+// accessible to the configured service token. The result is cached and reused
+// by every subsequent PushCommand call.
+//
+// Init is a no-op if OplogID was set explicitly in Config (useful for tests).
+// It returns *grimsync.AuthError for HTTP 401/403 or Hasura access-denied.
+func (c *Client) Init(ctx context.Context) error {
+	if c.resolvedOplogID != 0 {
+		return nil // already set via Config override or a previous call
+	}
+	if c.cfg.URL == "" || c.cfg.Token == "" {
+		return fmt.Errorf("ghostwriter: URL and Token must be set before calling Init")
+	}
+
+	body, err := json.Marshal(map[string]any{"query": discoverQuery})
+	if err != nil {
+		return fmt.Errorf("ghostwriter: marshal discover request: %w", err)
+	}
+
+	endpoint := strings.TrimRight(c.cfg.URL, "/") + "/v1/graphql"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("ghostwriter: build discover request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("ghostwriter: discover http: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("ghostwriter: read discover response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return &grimsync.AuthError{Err: fmt.Errorf("HTTP %d during oplog discovery", resp.StatusCode)}
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ghostwriter: discover: unexpected status %d: %.200s", resp.StatusCode, respBody)
+	}
+
+	var result struct {
+		Data struct {
+			Oplogs []struct {
+				ID int `json:"id"`
+			} `json:"oplog_oplog"`
+		} `json:"data"`
+		Errors []gqlError `json:"errors"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("ghostwriter: parse discover response: %w", err)
+	}
+	if len(result.Errors) > 0 {
+		return result.Errors[0].asError()
+	}
+
+	switch len(result.Data.Oplogs) {
+	case 0:
+		return fmt.Errorf("ghostwriter: token has no accessible oplog; verify the OPLOG_RW preset is set")
+	case 1:
+		c.resolvedOplogID = result.Data.Oplogs[0].ID
+		if c.logger != nil {
+			c.logger.Info("ghostwriter: discovered oplog", "oplog_id", c.resolvedOplogID)
+		}
+		return nil
+	default:
+		return fmt.Errorf("ghostwriter: token grants access to %d oplogs; set oplog_id explicitly", len(result.Data.Oplogs))
+	}
 }
 
 // PushCommand implements grimsync.Pusher. It loads the command's output chunks
@@ -93,8 +170,8 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 	if c.cfg.URL == "" || c.cfg.Token == "" {
 		return fmt.Errorf("ghostwriter: URL and Token must be configured")
 	}
-	if c.cfg.OplogID == 0 {
-		return fmt.Errorf("ghostwriter: OplogID must be configured")
+	if c.resolvedOplogID == 0 {
+		return fmt.Errorf("ghostwriter: oplog ID not resolved; call Init before pushing")
 	}
 
 	// --- Assemble output ---
@@ -106,7 +183,7 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 
 	// --- Build GraphQL request ---
 	vars := map[string]any{
-		"oplog_id":         c.cfg.OplogID,
+		"oplog_id":         c.resolvedOplogID,
 		"command":          cmd.Command,
 		"output":           output,
 		"start_date":       msToRFC3339(cmd.StartedAt),
@@ -217,6 +294,10 @@ func msToRFC3339(ms int64) string {
 // The service token must have the OPLOG_RW preset on the target oplog; Hasura
 // enforces the oplog_id_id constraint via the create_oplogentry_oplog_id header
 // claim injected by Ghostwriter's webhook.
+// discoverQuery fetches all oplogs visible to the current service token.
+// Hasura's row-level permissions ensure the token sees only its authorized oplog(s).
+const discoverQuery = `{ oplog_oplog { id } }`
+
 const insertMutation = `
 mutation GrimoireInsertOplogEntry(
   $oplog_id:         Int!

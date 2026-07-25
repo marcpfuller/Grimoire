@@ -204,15 +204,115 @@ func TestPushCommand_MissingToken_ReturnsErrorBeforeHTTP(t *testing.T) {
 	assert.Contains(t, err.Error(), "Token")
 }
 
-func TestPushCommand_MissingOplogID_ReturnsErrorBeforeHTTP(t *testing.T) {
+func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
+	// OplogID=0 and Init never called → resolvedOplogID stays 0.
 
 	cfg := ghostwriter.Config{URL: "http://example.com", Token: "gw_tok", OplogID: 0}
 	client := ghostwriter.NewWithHTTP(ms, cfg, &http.Client{}, nil)
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "OplogID")
+	assert.Contains(t, err.Error(), "Init")
+}
+
+// ---- Init / oplog discovery tests ----
+
+const discoverResponse = `{"data":{"oplog_oplog":[{"id":42}]}}`
+
+func TestInit_HappyPath(t *testing.T) {
+	// Server handles both the discover query and the subsequent push.
+	call := 0
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		call++
+		if call == 1 {
+			// First request: oplog discovery.
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(discoverResponse))
+			return
+		}
+		// Second request: insert mutation.
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validGQLResponse))
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return(simpleChunks, nil)
+
+	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_test_token_abc123"}
+	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+
+	require.NoError(t, client.Init(context.Background()))
+	require.NoError(t, client.PushCommand(context.Background(), finishedCmd))
+
+	// Verify the discovered oplog_id (42) was used in the mutation.
+	var payload struct {
+		Variables struct {
+			OplogID int `json:"oplog_id"`
+		} `json:"variables"`
+	}
+	require.NoError(t, json.Unmarshal(capturedBody, &payload))
+	assert.Equal(t, 42, payload.Variables.OplogID, "Init should have discovered oplog_id=42")
+}
+
+func TestInit_NoOplog_ReturnsError(t *testing.T) {
+	body := `{"data":{"oplog_oplog":[]}}`
+	srv, _ := newServer(t, http.StatusOK, body)
+
+	ms := dbmocks.NewMockStore(t)
+	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_tok"}
+	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+
+	err := client.Init(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no accessible oplog")
+}
+
+func TestInit_MultipleOplogs_ReturnsError(t *testing.T) {
+	body := `{"data":{"oplog_oplog":[{"id":1},{"id":2}]}}`
+	srv, _ := newServer(t, http.StatusOK, body)
+
+	ms := dbmocks.NewMockStore(t)
+	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_tok"}
+	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+
+	err := client.Init(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "2 oplogs")
+}
+
+func TestInit_AuthError_ReturnsAuthError(t *testing.T) {
+	srv, _ := newServer(t, http.StatusUnauthorized, `{"message":"Unauthorized"}`)
+
+	ms := dbmocks.NewMockStore(t)
+	cfg := ghostwriter.Config{URL: srv.URL, Token: "bad_token"}
+	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+
+	err := client.Init(context.Background())
+	require.Error(t, err)
+	var authErr *grimsync.AuthError
+	assert.ErrorAs(t, err, &authErr)
+}
+
+func TestInit_NoopWhenOplogIDPreset(t *testing.T) {
+	// When OplogID is set in Config, Init must not make any HTTP calls.
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_tok", OplogID: 7}
+	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+
+	require.NoError(t, client.Init(context.Background()))
+	assert.Equal(t, 0, callCount, "Init should not make HTTP calls when OplogID is pre-set")
 }
 
 func TestPushCommand_NilEndedAt_OmitsEndDate(t *testing.T) {
