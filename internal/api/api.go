@@ -3,6 +3,7 @@
 //
 // Endpoints:
 //
+//	 GET  /api/health      daemon liveness probe used by grim shell watcher
 //	GET  /api/next-id    shell precmd reserves the short ID for the next command
 //	POST /api/register   grim shell registers a new pane with the daemon
 //	POST /api/execute    shell preexec records a command start
@@ -42,6 +43,7 @@ func New(store db.Store, maxShortIDRetries int, logger *slog.Logger) *Server {
 // Handler returns an http.Handler with all API routes registered.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/next-id", s.handleNextID)
 	mux.HandleFunc("POST /api/register", s.handleRegister)
 	mux.HandleFunc("POST /api/execute", s.handleExecute)
@@ -296,4 +298,10 @@ func (s *Server) logWarn(msg string, args ...any) {
 	if s.logger != nil {
 		s.logger.Warn(msg, args...)
 	}
+}
+
+// handleHealth is a lightweight liveness probe. Returns 200 OK with no body.
+// Used by `grim shell` to detect daemon outages during an active session.
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	w.WriteHeader(http.StatusOK)
 }

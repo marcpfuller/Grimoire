@@ -35,6 +35,7 @@ _grimoire_next_short_id=""
 _grimoire_active_short_id=""
 _grimoire_active_started_at=""
 _grimoire_preexec_done=""  # guards against DEBUG trap re-entrancy
+_grimoire_preexec_fired="" # set to 1 when a real command ran; empty on empty Enter
 
 # --- Millisecond timestamp ---
 _grimoire_ms() {
@@ -78,6 +79,9 @@ _grimoire_preexec_trap() {
     _grimoire_preexec_done=1
     local cmd="${BASH_COMMAND}"
 
+    # Mark that a real command is running so precmd reserves a fresh ID.
+    _grimoire_preexec_fired=1
+
     [[ -z "${_grimoire_next_short_id}" ]] && return
 
     local started_at
@@ -109,6 +113,11 @@ _grimoire_precmd() {
     local exit_code=$? # must be first
     _grimoire_preexec_done="" # reset re-entrancy guard for next command
 
+    # Capture and reset the fired flag. If preexec didn't fire (empty Enter),
+    # keep the existing short_id rather than reserving a new one.
+    local preexec_fired="${_grimoire_preexec_fired}"
+    _grimoire_preexec_fired=""
+
     if [[ -n "${_grimoire_active_short_id}" ]]; then
         local ended_at
         ended_at=$(_grimoire_ms)
@@ -126,7 +135,10 @@ _grimoire_precmd() {
         _grimoire_active_started_at=""
     fi
 
-    _grimoire_reserve_next_id
+    # Only reserve a new ID when a command ran, or on the very first prompt.
+    if [[ -n "${preexec_fired}" || -z "${_grimoire_next_short_id}" ]]; then
+        _grimoire_reserve_next_id
+    fi
 
     # Update PS1 prefix with new short_id.
     if [[ -z "${GRIMOIRE_NO_PS1}" ]]; then
