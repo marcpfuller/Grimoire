@@ -146,10 +146,9 @@ func (s *captureState) snapshot() (commandID, startedAt int64, shortID string) {
 // Session wraps a single `grimoire shell` invocation. One Session is created
 // per `grimoire shell` call; it owns the PTY master and the child shell process.
 type Session struct {
-	paneID string
-	shell  string
-	store  db.Store
-	state  captureState
+	cfg   SessionConfig
+	store db.Store
+	state captureState
 	// out receives every byte that flows through the PTY (both passthrough and
 	// captured). Defaults to os.Stdout; injectable for tests.
 	out io.Writer
@@ -157,20 +156,34 @@ type Session struct {
 	logger *slog.Logger
 }
 
-// New returns a Session that will spawn shell under a PTY and register paneID
-// in the store. Call Run to start the session.
+// SessionConfig holds all configuration for a Session.
+type SessionConfig struct {
+	// PaneID is exported to the child shell as GRIMOIRE_PANE_ID.
+	PaneID string
+	// Shell is the path to the shell binary to spawn.
+	Shell string
+	// DaemonAddr is exported to the child shell as GRIMOIRE_DAEMON_ADDR.
+	DaemonAddr string
+	// ShellArgs are appended to the shell command (e.g. ["--init-file", "/tmp/rc"]).
+	ShellArgs []string
+	// ExtraEnv are additional KEY=VALUE pairs injected into the child env
+	// (e.g. ["ZDOTDIR=/tmp/grimoire-zdotdir-xyz"]).
+	ExtraEnv []string
+}
+
+// New returns a Session that will spawn the configured shell under a PTY.
+// Call Run to start the session.
 //
 // logger should be pre-bound with daemon-level attributes via slog.With; New
 // further binds pane_id so every log line carries it automatically. Pass nil
 // to suppress logging (useful in tests).
-func New(store db.Store, paneID, shell string, logger *slog.Logger) *Session {
+func New(store db.Store, cfg SessionConfig, logger *slog.Logger) *Session {
 	var log *slog.Logger
 	if logger != nil {
-		log = logger.With("pane_id", paneID)
+		log = logger.With("pane_id", cfg.PaneID)
 	}
 	return &Session{
-		paneID: paneID,
-		shell:  shell,
+		cfg:    cfg,
 		store:  store,
 		out:    os.Stdout,
 		logger: log,
@@ -178,7 +191,7 @@ func New(store db.Store, paneID, shell string, logger *slog.Logger) *Session {
 }
 
 // PaneID returns the GRIMOIRE_PANE_ID for this session.
-func (s *Session) PaneID() string { return s.paneID }
+func (s *Session) PaneID() string { return s.cfg.PaneID }
 
 // Run spawns the child shell, wires I/O, and blocks until the shell exits.
 // On return the caller should exit or return to its own shell (ssh semantics).
@@ -186,13 +199,17 @@ func (s *Session) Run(ctx context.Context) error {
 	// Spawn the shell without --login so it sources the interactive rc file
 	// (.zshrc / .bashrc) rather than the login profile. creack/pty attaches a
 	// real TTY so the shell enters interactive mode automatically.
-	// s.shell is set by the daemon operator via config, not from network input.
-	cmd := exec.CommandContext(ctx, s.shell) //nolint:gosec
-	cmd.Env = append(os.Environ(), "GRIMOIRE_PANE_ID="+s.paneID)
+	// s.cfg.Shell is set by the operator via config, not from network input.
+	cmd := exec.CommandContext(ctx, s.cfg.Shell, s.cfg.ShellArgs...) //nolint:gosec
+	cmd.Env = append(os.Environ(),
+		"GRIMOIRE_PANE_ID="+s.cfg.PaneID,
+		"GRIMOIRE_DAEMON_ADDR="+s.cfg.DaemonAddr,
+	)
+	cmd.Env = append(cmd.Env, s.cfg.ExtraEnv...)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
-		return fmt.Errorf("pty: start %s: %w", s.shell, err)
+		return fmt.Errorf("pty: start %s: %w", s.cfg.Shell, err)
 	}
 	defer ptmx.Close() //nolint:errcheck // PTY close errors are unactionable after shell exit
 
