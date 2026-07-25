@@ -371,7 +371,7 @@ func TestHandleRegister(t *testing.T) {
 			name: "upsert_fails",
 			body: map[string]any{"pane_id": "pane1", "project_id": "proj1"},
 			setupStore: func(m *dbmocks.MockStore) {
-				m.On("UpsertPane", mock.Anything, "pane1", "proj1", mock.AnythingOfType("int64")).
+				m.On("UpsertPane", mock.Anything, "pane1", "proj1", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
 					Return(errors.New("db error")).Once()
 			},
 			wantStatus: http.StatusInternalServerError,
@@ -380,7 +380,16 @@ func TestHandleRegister(t *testing.T) {
 			name: "success",
 			body: map[string]any{"pane_id": "pane1", "project_id": "proj1"},
 			setupStore: func(m *dbmocks.MockStore) {
-				m.On("UpsertPane", mock.Anything, "pane1", "proj1", mock.AnythingOfType("int64")).
+				m.On("UpsertPane", mock.Anything, "pane1", "proj1", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+					Return(nil).Once()
+			},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "zero_dimensions_default_to_220x50",
+			body: map[string]any{"pane_id": "pane1", "project_id": "proj1", "width": 0, "height": 0},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.On("UpsertPane", mock.Anything, "pane1", "proj1", mock.AnythingOfType("int64"), 220, 50).
 					Return(nil).Once()
 			},
 			wantStatus: http.StatusNoContent,
@@ -484,5 +493,5 @@ func TestHandleTag(t *testing.T) {
 func TestHandleHealth(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 	w := doRequest(t, newServer(t, store, 5), http.MethodGet, "/api/health", "")
-	assert.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, http.StatusOK, w.Code)
 }

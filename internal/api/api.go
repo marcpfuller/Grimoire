@@ -62,6 +62,8 @@ type nextIDResponse struct {
 type registerRequest struct {
 	PaneID    string `json:"pane_id"`
 	ProjectID string `json:"project_id"`
+	Width     int    `json:"width"`
+	Height    int    `json:"height"`
 }
 
 type executeRequest struct {
@@ -151,7 +153,13 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "pane_id and project_id are required")
 		return
 	}
-	if err := s.store.UpsertPane(r.Context(), req.PaneID, req.ProjectID, time.Now().UnixMilli()); err != nil {
+	if req.Width <= 0 {
+		req.Width = 220
+	}
+	if req.Height <= 0 {
+		req.Height = 50
+	}
+	if err := s.store.UpsertPane(r.Context(), req.PaneID, req.ProjectID, time.Now().UnixMilli(), req.Width, req.Height); err != nil {
 		s.logWarn("register: UpsertPane failed", "pane_id", req.PaneID, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to register pane")
 		return

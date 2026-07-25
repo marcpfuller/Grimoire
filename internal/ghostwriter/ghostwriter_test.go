@@ -122,7 +122,7 @@ func TestPushCommand_HTTP401_ReturnsAuthError(t *testing.T) {
 
 	require.Error(t, err)
 	var authErr *grimsync.AuthError
-	assert.ErrorAs(t, err, &authErr, "expected *grimsync.AuthError, got %T: %v", err, err)
+	require.ErrorAs(t, err, &authErr, "expected *grimsync.AuthError, got %T: %v", err, err)
 }
 
 func TestPushCommand_HTTP403_ReturnsAuthError(t *testing.T) {
@@ -166,7 +166,7 @@ func TestPushCommand_HasuraNonAuthGraphQLError_ReturnsPlainError(t *testing.T) {
 
 	require.Error(t, err)
 	var authErr *grimsync.AuthError
-	assert.NotErrorAs(t, err, &authErr, "non-auth graphql error should NOT be AuthError")
+	require.NotErrorAs(t, err, &authErr, "non-auth graphql error should NOT be AuthError")
 }
 
 func TestPushCommand_UnexpectedHTTPStatus_ReturnsPlainError(t *testing.T) {
@@ -180,7 +180,7 @@ func TestPushCommand_UnexpectedHTTPStatus_ReturnsPlainError(t *testing.T) {
 
 	require.Error(t, err)
 	var authErr *grimsync.AuthError
-	assert.NotErrorAs(t, err, &authErr)
+	require.NotErrorAs(t, err, &authErr)
 }
 
 func TestPushCommand_NetworkError_ReturnsPlainError(t *testing.T) {
@@ -193,7 +193,7 @@ func TestPushCommand_NetworkError_ReturnsPlainError(t *testing.T) {
 
 	require.Error(t, err)
 	var authErr *grimsync.AuthError
-	assert.NotErrorAs(t, err, &authErr)
+	require.NotErrorAs(t, err, &authErr)
 }
 
 func TestPushCommand_MissingToken_ReturnsErrorBeforeHTTP(t *testing.T) {
@@ -205,7 +205,7 @@ func TestPushCommand_MissingToken_ReturnsErrorBeforeHTTP(t *testing.T) {
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Token")
+	require.Contains(t, err.Error(), "Token")
 }
 
 func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
@@ -216,7 +216,7 @@ func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "Init")
+	require.Contains(t, err.Error(), "Init")
 }
 
 // ---- Init / oplog discovery tests ----
@@ -258,7 +258,7 @@ func TestInit_HappyPath(t *testing.T) {
 		} `json:"variables"`
 	}
 	require.NoError(t, json.Unmarshal(capturedBody, &payload))
-	assert.Equal(t, 42, payload.Variables.OplogID, "Init should have discovered oplog_id=42")
+	require.Equal(t, 42, payload.Variables.OplogID, "Init should have discovered oplog_id=42")
 }
 
 func TestInit_NoOplog_ReturnsError(t *testing.T) {
@@ -270,7 +270,7 @@ func TestInit_NoOplog_ReturnsError(t *testing.T) {
 
 	err := client.Init(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no accessible oplog")
+	require.Contains(t, err.Error(), "no accessible oplog")
 }
 
 func TestInit_MultipleOplogs_ReturnsError(t *testing.T) {
@@ -282,7 +282,7 @@ func TestInit_MultipleOplogs_ReturnsError(t *testing.T) {
 
 	err := client.Init(context.Background())
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "2 oplogs")
+	require.Contains(t, err.Error(), "2 oplogs")
 }
 
 func TestInit_AuthError_ReturnsAuthError(t *testing.T) {
@@ -294,7 +294,7 @@ func TestInit_AuthError_ReturnsAuthError(t *testing.T) {
 	err := client.Init(context.Background())
 	require.Error(t, err)
 	var authErr *grimsync.AuthError
-	assert.ErrorAs(t, err, &authErr)
+	require.ErrorAs(t, err, &authErr)
 }
 
 func TestInit_HasuraAccessDenied_ReturnsAuthError(t *testing.T) {
@@ -307,7 +307,7 @@ func TestInit_HasuraAccessDenied_ReturnsAuthError(t *testing.T) {
 	err := client.Init(context.Background())
 	require.Error(t, err)
 	var authErr *grimsync.AuthError
-	assert.ErrorAs(t, err, &authErr)
+	require.ErrorAs(t, err, &authErr)
 }
 
 func TestInit_IdempotentAfterSuccess(t *testing.T) {
@@ -326,7 +326,7 @@ func TestInit_IdempotentAfterSuccess(t *testing.T) {
 
 	require.NoError(t, client.Init(context.Background()))
 	require.NoError(t, client.Init(context.Background()))
-	assert.Equal(t, 1, callCount, "second Init call should not make an HTTP request")
+	require.Equal(t, 1, callCount, "second Init call should not make an HTTP request")
 }
 
 func TestPushCommand_NilEndedAt_OmitsEndDate(t *testing.T) {
