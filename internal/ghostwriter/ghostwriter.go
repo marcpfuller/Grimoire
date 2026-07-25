@@ -273,14 +273,14 @@ func msToRFC3339(ms int64) string {
 	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 }
 
-// insertMutation is the Hasura GraphQL mutation used to create an OplogEntry.
-// The service token must have the OPLOG_RW preset on the target oplog; Hasura
-// enforces the oplog_id_id constraint via the create_oplogentry_oplog_id header
-// claim injected by Ghostwriter's webhook.
 // discoverQuery fetches all oplogs visible to the current service token.
 // Hasura's row-level permissions ensure the token sees only its authorized oplog(s).
 const discoverQuery = `{ oplog_oplog { id } }`
 
+// insertMutation is the Hasura GraphQL mutation used to create an OplogEntry.
+// The service token must have the OPLOG_RW preset on the target oplog; Hasura
+// enforces the oplog_id_id constraint via the create_oplogentry_oplog_id header
+// claim injected by Ghostwriter's webhook.
 const insertMutation = `
 mutation GrimoireInsertOplogEntry(
   $oplog_id:         Int!

@@ -134,6 +134,7 @@ func TestPushCommand_HTTP403_ReturnsAuthError(t *testing.T) {
 	client := newTestClient(t, ms, srv.URL, srv.Client())
 	err := client.PushCommand(context.Background(), finishedCmd)
 
+	require.Error(t, err)
 	var authErr *grimsync.AuthError
 	assert.ErrorAs(t, err, &authErr)
 }
@@ -148,6 +149,7 @@ func TestPushCommand_HasuraAccessDenied_ReturnsAuthError(t *testing.T) {
 	client := newTestClient(t, ms, srv.URL, srv.Client())
 	err := client.PushCommand(context.Background(), finishedCmd)
 
+	require.Error(t, err)
 	var authErr *grimsync.AuthError
 	assert.ErrorAs(t, err, &authErr)
 }
@@ -244,7 +246,7 @@ func TestInit_HappyPath(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return(simpleChunks, nil)
 
-	client := ghostwriter.NewWithHTTP(ms, srv.URL, "gw_test_token_abc123", srv.Client(), nil)
+	client := ghostwriter.NewWithHTTP(ms, srv.URL, testToken, srv.Client(), nil)
 
 	require.NoError(t, client.Init(context.Background()))
 	require.NoError(t, client.PushCommand(context.Background(), finishedCmd))
