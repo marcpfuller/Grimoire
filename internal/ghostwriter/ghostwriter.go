@@ -41,62 +41,42 @@ func StripANSI(s string) string {
 	return ansiRe.ReplaceAllString(s, "")
 }
 
-// Config holds the connection parameters for a Ghostwriter instance.
-type Config struct {
-	// URL is the Ghostwriter base URL, e.g. "https://ghostwriter.example.com".
-	// PushCommand appends "/v1/graphql" to reach the Hasura endpoint directly.
-	URL string
-	// Token is the Ghostwriter service token (opaque, not a JWT). It must have
-	// the OPLOG_RW preset on the target oplog. Passed as "Bearer <token>".
-	Token string
-	// OplogID overrides auto-discovery when non-zero. Leave zero in production;
-	// the daemon calls Init to discover the oplog from the token's scope.
-	// Useful in tests to skip the discovery round-trip.
-	OplogID int
-}
-
 // Client implements grimsync.Pusher against a live Ghostwriter instance.
 type Client struct {
 	store           db.Store
-	cfg             Config
+	url             string
+	token           string
 	http            *http.Client
 	logger          *slog.Logger
-	resolvedOplogID int // set by New/NewWithHTTP (cfg.OplogID) or discovered by Init
+	resolvedOplogID int // cached by Init; zero means Init has not yet run
 }
 
 // New returns a Client. Call Init on the returned client before pushing commands.
 // An http.Client with a 30-second timeout is used by default; inject a custom
 // one by calling NewWithHTTP.
-func New(store db.Store, cfg Config, logger *slog.Logger) *Client {
-	return NewWithHTTP(store, cfg, &http.Client{Timeout: 30 * time.Second}, logger)
+func New(store db.Store, url, token string, logger *slog.Logger) *Client {
+	return NewWithHTTP(store, url, token, &http.Client{Timeout: 30 * time.Second}, logger)
 }
 
 // NewWithHTTP is like New but accepts a caller-supplied http.Client, useful
 // for tests that inject an httptest.Server transport.
-func NewWithHTTP(store db.Store, cfg Config, hc *http.Client, logger *slog.Logger) *Client {
-	return &Client{
-		store:           store,
-		cfg:             cfg,
-		http:            hc,
-		logger:          logger,
-		resolvedOplogID: cfg.OplogID, // pre-populate; Init is a no-op when nonzero
-	}
+func NewWithHTTP(store db.Store, url, token string, hc *http.Client, logger *slog.Logger) *Client {
+	return &Client{store: store, url: url, token: token, http: hc, logger: logger}
 }
 
 // Init resolves the oplog ID by querying Ghostwriter for the single oplog
-// accessible to the configured service token. The result is cached and reused
-// by every subsequent PushCommand call.
+// accessible to the configured service token. The result is cached; subsequent
+// calls are no-ops.
 //
 // Init must complete before any calls to PushCommand. Concurrent invocations
 // of Init and PushCommand are not safe.
 //
-// Init is a no-op if OplogID was set explicitly in Config (useful for tests).
 // It returns *grimsync.AuthError for HTTP 401/403 or Hasura access-denied.
 func (c *Client) Init(ctx context.Context) error {
 	if c.resolvedOplogID != 0 {
-		return nil // already set via Config override or a previous call
+		return nil // idempotent: already discovered
 	}
-	if c.cfg.URL == "" || c.cfg.Token == "" {
+	if c.url == "" || c.token == "" {
 		return fmt.Errorf("ghostwriter: URL and Token must be set before calling Init")
 	}
 
@@ -105,13 +85,13 @@ func (c *Client) Init(ctx context.Context) error {
 		return fmt.Errorf("ghostwriter: marshal discover request: %w", err)
 	}
 
-	endpoint := strings.TrimRight(c.cfg.URL, "/") + "/v1/graphql"
+	endpoint := strings.TrimRight(c.url, "/") + "/v1/graphql"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("ghostwriter: build discover request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+c.token)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -170,7 +150,7 @@ func (c *Client) Init(ctx context.Context) error {
 //     errors that do not indicate an auth problem. The syncer retries on the
 //     next tick for plain errors.
 func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
-	if c.cfg.URL == "" || c.cfg.Token == "" {
+	if c.url == "" || c.token == "" {
 		return fmt.Errorf("ghostwriter: URL and Token must be configured")
 	}
 	if c.resolvedOplogID == 0 {
@@ -205,13 +185,13 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 	}
 
 	// --- POST to Hasura ---
-	endpoint := strings.TrimRight(c.cfg.URL, "/") + "/v1/graphql"
+	endpoint := strings.TrimRight(c.url, "/") + "/v1/graphql"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("ghostwriter: build request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+c.token)
 
 	resp, err := c.http.Do(req)
 	if err != nil {

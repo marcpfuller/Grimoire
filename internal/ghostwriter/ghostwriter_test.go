@@ -53,13 +53,15 @@ func newServer(t *testing.T, status int, body string) (*httptest.Server, *http.R
 	return srv, &last
 }
 
-// validCfg returns a Config pointing at the given server URL with sane defaults.
-func validCfg(url string) ghostwriter.Config {
-	return ghostwriter.Config{
-		URL:     url,
-		Token:   "gw_test_token_abc123",
-		OplogID: 7,
-	}
+const testToken = "gw_test_token_abc123" //nolint:gosec // test credential only
+
+// newTestClient creates a client pointing at url, pre-resolves the oplog ID
+// to 7 via SetOplogIDForTest, and is ready to call PushCommand without Init.
+func newTestClient(t *testing.T, store db.Store, url string, hc *http.Client) *ghostwriter.Client {
+	t.Helper()
+	c := ghostwriter.NewWithHTTP(store, url, testToken, hc, nil)
+	ghostwriter.SetOplogIDForTest(c, 7)
+	return c
 }
 
 func TestPushCommand_HappyPath(t *testing.T) {
@@ -68,12 +70,12 @@ func TestPushCommand_HappyPath(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return(simpleChunks, nil)
 
-	client := ghostwriter.NewWithHTTP(ms, validCfg(srv.URL), srv.Client(), nil)
+	client := newTestClient(t, ms, srv.URL, srv.Client())
 	err := client.PushCommand(context.Background(), finishedCmd)
 	require.NoError(t, err)
 
 	// Verify auth header was sent.
-	assert.Equal(t, "Bearer gw_test_token_abc123", captured.Header.Get("Authorization"))
+	assert.Equal(t, "Bearer "+testToken, captured.Header.Get("Authorization"))
 	assert.Equal(t, "application/json", captured.Header.Get("Content-Type"))
 	assert.Equal(t, "/v1/graphql", captured.URL.Path)
 }
@@ -92,7 +94,7 @@ func TestPushCommand_OutputAssemblyAndANSIStrip(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return(simpleChunks, nil)
 
-	client := ghostwriter.NewWithHTTP(ms, validCfg(srv.URL), srv.Client(), nil)
+	client := newTestClient(t, ms, srv.URL, srv.Client())
 	require.NoError(t, client.PushCommand(context.Background(), finishedCmd))
 
 	var payload struct {
@@ -115,7 +117,7 @@ func TestPushCommand_HTTP401_ReturnsAuthError(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return([]*db.OutputChunk{}, nil)
 
-	client := ghostwriter.NewWithHTTP(ms, validCfg(srv.URL), srv.Client(), nil)
+	client := newTestClient(t, ms, srv.URL, srv.Client())
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -129,7 +131,7 @@ func TestPushCommand_HTTP403_ReturnsAuthError(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return([]*db.OutputChunk{}, nil)
 
-	client := ghostwriter.NewWithHTTP(ms, validCfg(srv.URL), srv.Client(), nil)
+	client := newTestClient(t, ms, srv.URL, srv.Client())
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	var authErr *grimsync.AuthError
@@ -143,7 +145,7 @@ func TestPushCommand_HasuraAccessDenied_ReturnsAuthError(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return([]*db.OutputChunk{}, nil)
 
-	client := ghostwriter.NewWithHTTP(ms, validCfg(srv.URL), srv.Client(), nil)
+	client := newTestClient(t, ms, srv.URL, srv.Client())
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	var authErr *grimsync.AuthError
@@ -157,7 +159,7 @@ func TestPushCommand_HasuraNonAuthGraphQLError_ReturnsPlainError(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return([]*db.OutputChunk{}, nil)
 
-	client := ghostwriter.NewWithHTTP(ms, validCfg(srv.URL), srv.Client(), nil)
+	client := newTestClient(t, ms, srv.URL, srv.Client())
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -171,7 +173,7 @@ func TestPushCommand_UnexpectedHTTPStatus_ReturnsPlainError(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return([]*db.OutputChunk{}, nil)
 
-	client := ghostwriter.NewWithHTTP(ms, validCfg(srv.URL), srv.Client(), nil)
+	client := newTestClient(t, ms, srv.URL, srv.Client())
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -183,8 +185,8 @@ func TestPushCommand_NetworkError_ReturnsPlainError(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return([]*db.OutputChunk{}, nil)
 
-	cfg := validCfg("http://127.0.0.1:1") // nothing listening on port 1
-	client := ghostwriter.NewWithHTTP(ms, cfg, &http.Client{Timeout: 100 * time.Millisecond}, nil)
+	client := ghostwriter.NewWithHTTP(ms, "http://127.0.0.1:1", testToken, &http.Client{Timeout: 100 * time.Millisecond}, nil)
+	ghostwriter.SetOplogIDForTest(client, 7) // bypass Init; test only the push network error
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -194,10 +196,10 @@ func TestPushCommand_NetworkError_ReturnsPlainError(t *testing.T) {
 
 func TestPushCommand_MissingToken_ReturnsErrorBeforeHTTP(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
-	// GetOutputChunks must NOT be called if config is invalid.
+	// GetOutputChunks must NOT be called if token is missing.
 
-	cfg := ghostwriter.Config{URL: "http://example.com", Token: "", OplogID: 1}
-	client := ghostwriter.NewWithHTTP(ms, cfg, &http.Client{}, nil)
+	client := ghostwriter.NewWithHTTP(ms, "http://example.com", "", &http.Client{}, nil)
+	ghostwriter.SetOplogIDForTest(client, 1) // bypass Init; test only the token guard
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -206,10 +208,9 @@ func TestPushCommand_MissingToken_ReturnsErrorBeforeHTTP(t *testing.T) {
 
 func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
-	// OplogID=0 and Init never called → resolvedOplogID stays 0.
+	// Init never called → resolvedOplogID stays 0.
 
-	cfg := ghostwriter.Config{URL: "http://example.com", Token: "gw_tok", OplogID: 0}
-	client := ghostwriter.NewWithHTTP(ms, cfg, &http.Client{}, nil)
+	client := ghostwriter.NewWithHTTP(ms, "http://example.com", "gw_tok", &http.Client{}, nil)
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -243,8 +244,7 @@ func TestInit_HappyPath(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return(simpleChunks, nil)
 
-	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_test_token_abc123"}
-	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+	client := ghostwriter.NewWithHTTP(ms, srv.URL, "gw_test_token_abc123", srv.Client(), nil)
 
 	require.NoError(t, client.Init(context.Background()))
 	require.NoError(t, client.PushCommand(context.Background(), finishedCmd))
@@ -264,8 +264,7 @@ func TestInit_NoOplog_ReturnsError(t *testing.T) {
 	srv, _ := newServer(t, http.StatusOK, body)
 
 	ms := dbmocks.NewMockStore(t)
-	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_tok"}
-	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+	client := ghostwriter.NewWithHTTP(ms, srv.URL, "gw_tok", srv.Client(), nil)
 
 	err := client.Init(context.Background())
 	require.Error(t, err)
@@ -277,8 +276,7 @@ func TestInit_MultipleOplogs_ReturnsError(t *testing.T) {
 	srv, _ := newServer(t, http.StatusOK, body)
 
 	ms := dbmocks.NewMockStore(t)
-	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_tok"}
-	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+	client := ghostwriter.NewWithHTTP(ms, srv.URL, "gw_tok", srv.Client(), nil)
 
 	err := client.Init(context.Background())
 	require.Error(t, err)
@@ -289,8 +287,7 @@ func TestInit_AuthError_ReturnsAuthError(t *testing.T) {
 	srv, _ := newServer(t, http.StatusUnauthorized, `{"message":"Unauthorized"}`)
 
 	ms := dbmocks.NewMockStore(t)
-	cfg := ghostwriter.Config{URL: srv.URL, Token: "bad_token"}
-	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+	client := ghostwriter.NewWithHTTP(ms, srv.URL, "bad_token", srv.Client(), nil)
 
 	err := client.Init(context.Background())
 	require.Error(t, err)
@@ -303,8 +300,7 @@ func TestInit_HasuraAccessDenied_ReturnsAuthError(t *testing.T) {
 	srv, _ := newServer(t, http.StatusOK, body)
 
 	ms := dbmocks.NewMockStore(t)
-	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_tok"}
-	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+	client := ghostwriter.NewWithHTTP(ms, srv.URL, "gw_tok", srv.Client(), nil)
 
 	err := client.Init(context.Background())
 	require.Error(t, err)
@@ -312,21 +308,23 @@ func TestInit_HasuraAccessDenied_ReturnsAuthError(t *testing.T) {
 	assert.ErrorAs(t, err, &authErr)
 }
 
-func TestInit_NoopWhenOplogIDPreset(t *testing.T) {
-	// When OplogID is set in Config, Init must not make any HTTP calls.
+func TestInit_IdempotentAfterSuccess(t *testing.T) {
+	// A second call to Init must not make any additional HTTP requests.
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(discoverResponse))
 	}))
 	t.Cleanup(srv.Close)
 
 	ms := dbmocks.NewMockStore(t)
-	cfg := ghostwriter.Config{URL: srv.URL, Token: "gw_tok", OplogID: 7}
-	client := ghostwriter.NewWithHTTP(ms, cfg, srv.Client(), nil)
+	client := ghostwriter.NewWithHTTP(ms, srv.URL, "gw_tok", srv.Client(), nil)
 
 	require.NoError(t, client.Init(context.Background()))
-	assert.Equal(t, 0, callCount, "Init should not make HTTP calls when OplogID is pre-set")
+	require.NoError(t, client.Init(context.Background()))
+	assert.Equal(t, 1, callCount, "second Init call should not make an HTTP request")
 }
 
 func TestPushCommand_NilEndedAt_OmitsEndDate(t *testing.T) {
@@ -345,7 +343,7 @@ func TestPushCommand_NilEndedAt_OmitsEndDate(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), cmdNoEnd.ID).Return([]*db.OutputChunk{}, nil)
 
-	client := ghostwriter.NewWithHTTP(ms, validCfg(srv.URL), srv.Client(), nil)
+	client := newTestClient(t, ms, srv.URL, srv.Client())
 	require.NoError(t, client.PushCommand(context.Background(), &cmdNoEnd))
 
 	var payload struct {

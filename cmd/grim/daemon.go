@@ -99,10 +99,7 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	gwURL := viper.GetString("ghostwriter.url")
 	gwToken := viper.GetString("ghostwriter.token")
 	if gwURL != "" && gwToken != "" {
-		client := ghostwriter.New(store, ghostwriter.Config{
-			URL:   gwURL,
-			Token: gwToken,
-		}, log)
+		client := ghostwriter.New(store, gwURL, gwToken, log)
 		if err := client.Init(ctx); err != nil {
 			return fmt.Errorf("ghostwriter init: %w", err)
 		}
