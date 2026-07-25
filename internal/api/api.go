@@ -8,6 +8,7 @@
 //	POST /api/execute    shell preexec records a command start
 //	POST /api/precmd     shell precmd records a command end
 //	POST /api/deregister shell exit removes the pane's pending reservation
+//	POST /api/tag        grim tag attaches a label to a recorded command
 package api
 
 import (
@@ -46,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/execute", s.handleExecute)
 	mux.HandleFunc("POST /api/precmd", s.handlePrecmd)
 	mux.HandleFunc("POST /api/deregister", s.handleDeregister)
+	mux.HandleFunc("POST /api/tag", s.handleTag)
 	return mux
 }
 
@@ -80,6 +82,11 @@ type precmdRequest struct {
 
 type deregisterRequest struct {
 	PaneID string `json:"pane_id"`
+}
+
+type tagRequest struct {
+	ShortID string `json:"short_id"`
+	Label   string `json:"label"`
 }
 
 type errorResponse struct {
@@ -206,6 +213,44 @@ func (s *Server) handlePrecmd(w http.ResponseWriter, r *http.Request) {
 		}
 		s.logWarn("precmd: FinalizeCommand failed", "pane_id", req.PaneID, "short_id", req.ShortID, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to finalize command")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleTag handles POST /api/tag.
+// It resolves the short ID to a command and attaches a label to it.
+// Returns 409 Conflict if the label has already been applied to the command.
+func (s *Server) handleTag(w http.ResponseWriter, r *http.Request) {
+	var req tagRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.ShortID == "" || req.Label == "" {
+		writeError(w, http.StatusBadRequest, "short_id and label are required")
+		return
+	}
+
+	cmd, err := s.store.GetCommandByShortID(r.Context(), req.ShortID)
+	if err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "command not found")
+			return
+		}
+		s.logWarn("tag: GetCommandByShortID failed", "short_id", req.ShortID, "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to look up command")
+		return
+	}
+
+	if err = s.store.AddTag(r.Context(), cmd.ID, req.Label, time.Now().UnixMilli()); err != nil {
+		if errors.Is(err, db.ErrDuplicateTag) {
+			writeError(w, http.StatusConflict, "label already applied to this command")
+			return
+		}
+		s.logWarn("tag: AddTag failed", "short_id", req.ShortID, "label", req.Label, "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to add tag")
 		return
 	}
 

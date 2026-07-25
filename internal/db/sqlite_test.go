@@ -468,6 +468,23 @@ func TestTags(t *testing.T) {
 	t.Run("invalid_command_id", func(t *testing.T) {
 		s := openTestStore(t)
 		err := s.AddTag(context.Background(), 99999, "should fail", 1000)
-		assert.Error(t, err, "expected FK violation for unknown command_id")
+		// FK violations bypass INSERT OR IGNORE (SQLite ON CONFLICT does not cover
+		// foreign keys), so this must be a real DB error, not ErrDuplicateTag.
+		require.Error(t, err, "expected FK violation for unknown command_id")
+		assert.NotErrorIs(t, err, db.ErrDuplicateTag, "FK error must not be misclassified as duplicate tag")
+	})
+
+	t.Run("duplicate_label", func(t *testing.T) {
+		s := openTestStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, s.CreatePane(ctx, "pane-B", "proj-gw2", 1000))
+		require.NoError(t, s.ReserveShortID(ctx, "pane-B", "dup0001"))
+		cmd := &db.Command{PaneID: "pane-B", Command: "whoami", StartedAt: 1000}
+		require.NoError(t, s.CreateCommand(ctx, cmd))
+
+		require.NoError(t, s.AddTag(ctx, cmd.ID, "Credential Access", 2000))
+		err := s.AddTag(ctx, cmd.ID, "Credential Access", 3000)
+		assert.ErrorIs(t, err, db.ErrDuplicateTag, "second identical label must return ErrDuplicateTag")
 	})
 }

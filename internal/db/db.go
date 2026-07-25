@@ -7,8 +7,9 @@ import (
 
 // Sentinel errors.
 var (
-	ErrNotFound = errors.New("db: record not found")
-	ErrConflict = errors.New("db: short_id already in use")
+	ErrNotFound     = errors.New("db: record not found")
+	ErrConflict     = errors.New("db: short_id already in use")
+	ErrDuplicateTag = errors.New("db: tag label already applied to this command")
 )
 
 // Pane represents a terminal pane session anchored by GRIMOIRE_PANE_ID.
