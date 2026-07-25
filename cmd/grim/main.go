@@ -38,6 +38,7 @@ func init() {
 		"path to config file (default: config/config.yaml)")
 	rootCmd.AddCommand(shellCmd)
 	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(tagCmd)
 }
 
 // initConfig reads the config file and sets Viper defaults. Called by

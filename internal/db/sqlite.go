@@ -42,7 +42,11 @@ CREATE TABLE IF NOT EXISTS tags (
     id         INTEGER PRIMARY KEY,
     command_id INTEGER NOT NULL REFERENCES commands(id),
     label      TEXT    NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    -- Deduplication enforced at both schema (new DBs) and application layer
+    -- (AddTag uses INSERT OR IGNORE) so existing DBs without this constraint
+    -- are also protected.
+    UNIQUE(command_id, label)
 );
 
 CREATE TABLE IF NOT EXISTS pending_commands (
@@ -399,11 +403,18 @@ func (s *sqliteStore) GetOutputChunks(ctx context.Context, commandID int64) (chu
 // --- Tags ---
 
 func (s *sqliteStore) AddTag(ctx context.Context, commandID int64, label string, createdAt int64) error {
-	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO tags (command_id, label, created_at) VALUES (?, ?, ?)`,
+	res, err := s.db.ExecContext(ctx,
+		`INSERT OR IGNORE INTO tags (command_id, label, created_at) VALUES (?, ?, ?)`,
 		commandID, label, createdAt,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrDuplicateTag
+	}
+	return nil
 }
 
 func (s *sqliteStore) GetTagsByCommand(ctx context.Context, commandID int64) (tags []*Tag, err error) {

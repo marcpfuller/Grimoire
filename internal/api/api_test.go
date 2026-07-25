@@ -399,3 +399,84 @@ func TestHandleRegister(t *testing.T) {
 		})
 	}
 }
+
+// --- POST /api/tag ---
+
+func TestHandleTag(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       any
+		setupStore func(*dbmocks.MockStore)
+		wantStatus int
+	}{
+		{
+			name:       "missing body fields",
+			body:       map[string]string{},
+			setupStore: func(_ *dbmocks.MockStore) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing short_id",
+			body:       map[string]string{"label": "Dumped hashes"},
+			setupStore: func(_ *dbmocks.MockStore) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing label",
+			body:       map[string]string{"short_id": "a1b2c3d"},
+			setupStore: func(_ *dbmocks.MockStore) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "command not found",
+			body: map[string]string{"short_id": "a1b2c3d", "label": "Dumped hashes"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(nil, db.ErrNotFound)
+			},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "duplicate tag",
+			body: map[string]string{"short_id": "a1b2c3d", "label": "Dumped hashes"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42}, nil)
+				m.EXPECT().AddTag(mock.Anything, int64(42), "Dumped hashes", mock.AnythingOfType("int64")).
+					Return(db.ErrDuplicateTag)
+			},
+			wantStatus: http.StatusConflict,
+		},
+		{
+			name: "store error on AddTag",
+			body: map[string]string{"short_id": "a1b2c3d", "label": "Dumped hashes"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42}, nil)
+				m.EXPECT().AddTag(mock.Anything, int64(42), "Dumped hashes", mock.AnythingOfType("int64")).
+					Return(errors.New("disk full"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "happy path",
+			body: map[string]string{"short_id": "a1b2c3d", "label": "Dumped hashes"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42}, nil)
+				m.EXPECT().AddTag(mock.Anything, int64(42), "Dumped hashes", mock.AnythingOfType("int64")).
+					Return(nil)
+			},
+			wantStatus: http.StatusNoContent,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			tt.setupStore(store)
+			w := doRequest(t, newServer(t, store, 5), http.MethodPost, "/api/tag", tt.body)
+			assert.Equal(t, tt.wantStatus, w.Code)
+		})
+	}
+}
