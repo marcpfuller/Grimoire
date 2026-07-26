@@ -2,15 +2,15 @@ BINARY_NAME := grim
 BUILD_DIR   := dist
 CMD_PATH    := ./cmd/grim
 
-.PHONY: all build test lint clean web mocks
+.PHONY: all build build-linux test test-verbose lint coverage clean mocks tidy
 
-all: web build
+all: build
 
 build:
 	go build -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
-build-static:
-	CGO_ENABLED=0 GOOS=linux go build -a -ldflags '-extldflags "-static"' -o $(BUILD_DIR)/$(BINARY_NAME)-linux $(CMD_PATH)
+build-linux:
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(BUILD_DIR)/$(BINARY_NAME)-linux $(CMD_PATH)
 
 test:
 	go test ./...
@@ -18,15 +18,15 @@ test:
 test-verbose:
 	go test -v -race ./...
 
+coverage:
+	go test -coverprofile=coverage.out ./...
+	go tool cover -func=coverage.out
+
 lint:
 	golangci-lint run ./...
 
-web:
-	cd web && npm run build
-
 clean:
 	rm -rf $(BUILD_DIR)
-	rm -rf web/dist
 
 mocks:
 	go tool mockery

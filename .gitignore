@@ -39,3 +39,6 @@ internal/db/mocks/
 
 # Dist directory
 dist/
+
+# casts dir
+casts/
