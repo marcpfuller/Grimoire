@@ -42,3 +42,8 @@ dist/
 
 # casts dir
 casts/
+
+# Web frontend — generated/ephemeral directories
+web/node_modules/
+web/dist/
+web/src/api/generated.ts

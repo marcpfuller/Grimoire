@@ -1,0 +1,6 @@
+packages:
+  - path: github.com/marcpfuller/grimoire/internal/api
+    output_path: web/src/api/generated.ts
+    type_mappings:
+      time.Time: string
+      "[]byte": string
