@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import type { Toast } from '../../api/types'
+import { API } from '../../api'
 import { useCommandMetadata } from '../../hooks/useCommandMetadata'
 import { isDirty, applyPatch } from '../../utils/metadata'
 import { MetadataGrid } from './MetadataGrid'
@@ -29,9 +30,19 @@ export function MetadataEditor({ commandId, addToast }: MetadataEditorProps) {
   const dirty = isDirty(saved, draft, removedTags, stagedTags)
 
   const handleApply = async () => {
+    if (!commandId) return
     try {
-      // TODO: replace with API.patchCommandMetadata(commandId, draft)
-      await new Promise(resolve => setTimeout(resolve, 300))
+      await API.patchCommandMetadata(commandId, {
+        operator: draft.operator || undefined,
+        tool: draft.tool || undefined,
+        userContext: draft.userContext || undefined,
+        sourceIp: draft.sourceIp || undefined,
+        destinationIp: draft.destinationIp || undefined,
+        description: draft.description || undefined,
+        comments: draft.comments || undefined,
+        addTags: stagedTags.length > 0 ? stagedTags : undefined,
+        removeTags: removedTags.length > 0 ? removedTags : undefined,
+      })
       const newSaved = applyPatch(draft, removedTags, stagedTags)
       setSaved(newSaved)
       setDraft(newSaved)

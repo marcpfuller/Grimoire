@@ -26,7 +26,7 @@ type Command struct {
 	ID        int64
 	ShortID   string // 7-hex operator tag, e.g. "a1b2c3d"
 	PaneID    string
-	ProjectID string // Ghostwriter project ID, denormalised from panes
+	ProjectID string // Ghostwriter project ID, derived via JOIN on panes at read time
 	Seq       int64  // sequential position within the pane
 	Command   string
 	StartedAt int64  // Unix ms
@@ -51,6 +51,33 @@ type Tag struct {
 	CreatedAt int64 // Unix ms
 }
 
+// TagWithCommand is returned by ListAllTagsWithCommands and enriches Tag with
+// denormalised fields from the parent command row, avoiding N+1 lookups.
+type TagWithCommand struct {
+	ID          int64
+	CommandID   int64
+	ShortID     string
+	Label       string
+	CommandText string
+	PaneID      string
+	CreatedAt   int64 // Unix ms
+}
+
+// CommandMetadata stores operator-supplied annotations for a command.
+// The Tool field defaults to the first token of Command.Command when no row
+// has been saved yet; all other fields default to empty string.
+type CommandMetadata struct {
+	CommandID     int64
+	Operator      string
+	Tool          string
+	UserContext   string
+	SourceIP      string
+	DestinationIP string
+	Description   string
+	Comments      string
+	UpdatedAt     int64 // Unix ms
+}
+
 // Store is the primary persistence interface. All database interactions go
 // through this interface so implementations can be swapped or mocked in tests.
 type Store interface {
@@ -62,6 +89,7 @@ type Store interface {
 	UpsertPane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error
 	CreatePane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error
 	GetPane(ctx context.Context, paneID string) (*Pane, error)
+	ListPanes(ctx context.Context) ([]*Pane, error)
 	// DeregisterPane removes the pending short ID reservation for paneID so
 	// the ID is immediately available to other panes. The pane row and all
 	// its commands are retained for historical purposes.
@@ -100,6 +128,13 @@ type Store interface {
 	// Tags
 	AddTag(ctx context.Context, commandID int64, label string, createdAt int64) error
 	GetTagsByCommand(ctx context.Context, commandID int64) ([]*Tag, error)
+	RemoveTag(ctx context.Context, commandID int64, label string) error
+	ListAllTags(ctx context.Context) ([]*Tag, error)
+	ListAllTagsWithCommands(ctx context.Context) ([]*TagWithCommand, error)
+
+	// Metadata
+	GetCommandMetadata(ctx context.Context, commandID int64) (*CommandMetadata, error)
+	UpsertCommandMetadata(ctx context.Context, m *CommandMetadata) error
 
 	// Lifecycle
 	Close() error

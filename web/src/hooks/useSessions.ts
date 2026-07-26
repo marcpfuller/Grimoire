@@ -5,7 +5,7 @@ import type { Session } from '../api/types'
 export function useSessions(): Session[] {
   const [sessions, setSessions] = useState<Session[]>([])
   useEffect(() => {
-    API.fetchSessions().then(setSessions).catch(console.error)
+    API.fetchSessions().then(data => setSessions(data ?? [])).catch(console.error)
   }, [])
   return sessions
 }

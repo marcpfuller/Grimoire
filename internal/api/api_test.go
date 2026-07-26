@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -494,4 +495,581 @@ func TestHandleHealth(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 	w := doRequest(t, newServer(t, store, 5), http.MethodGet, "/api/health", "")
 	require.Equal(t, http.StatusOK, w.Code)
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/sessions
+// ---------------------------------------------------------------------------
+
+func TestHandleGetSessions(t *testing.T) {
+	completedAt := int64(2500)
+	exitCode := 0
+
+	tests := []struct {
+		name       string
+		setupStore func(*dbmocks.MockStore)
+		wantStatus int
+		check      func(*testing.T, *httptest.ResponseRecorder)
+	}{
+		{
+			name: "list_panes_fails",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return(nil, errors.New("db down"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "no_panes_returns_empty_array",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var got []any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
+				assert.Empty(t, got)
+			},
+		},
+		{
+			name: "list_commands_fails",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{{ID: "pane1"}}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane1").
+					Return(nil, errors.New("db down"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "pane_with_no_commands_serialises_as_empty_array_not_null",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{{ID: "pane1"}}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane1").Return([]*db.Command{}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				// Must be [] in JSON, not null — frontend does .map() on this field.
+				assert.Contains(t, w.Body.String(), `"commands":[]`)
+			},
+		},
+		{
+			name: "inflight_command_duration_is_sentinel_minus_one",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{{ID: "pane1"}}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane1").Return([]*db.Command{
+					{ID: 1, ShortID: "abc0001", PaneID: "pane1", Command: "nmap", StartedAt: 1000, EndedAt: nil},
+				}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var sessions []map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&sessions))
+				cmds := sessions[0]["commands"].([]any)
+				require.Len(t, cmds, 1)
+				assert.Equal(t, "-1", cmds[0].(map[string]any)["duration"])
+			},
+		},
+		{
+			name: "completed_command_duration_formatted_in_seconds",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{{ID: "pane1"}}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane1").Return([]*db.Command{
+					// EndedAt=2500, StartedAt=1000 → 1500 ms → "1.5s"
+					{ID: 1, ShortID: "abc0001", PaneID: "pane1", Command: "nmap",
+						StartedAt: 1000, EndedAt: &completedAt, ExitCode: &exitCode},
+				}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var sessions []map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&sessions))
+				cmds := sessions[0]["commands"].([]any)
+				assert.Equal(t, "1.5s", cmds[0].(map[string]any)["duration"])
+			},
+		},
+		{
+			name: "session_id_and_name_both_equal_pane_id",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{{ID: "pane-abc123"}}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane-abc123").Return([]*db.Command{}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var sessions []map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&sessions))
+				require.Len(t, sessions, 1)
+				assert.Equal(t, "pane-abc123", sessions[0]["id"])
+				assert.Equal(t, "pane-abc123", sessions[0]["name"])
+			},
+		},
+		{
+			name: "multiple_panes_all_queried",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{
+					{ID: "pane1"}, {ID: "pane2"},
+				}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane1").Return([]*db.Command{}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane2").Return([]*db.Command{}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var sessions []map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&sessions))
+				assert.Len(t, sessions, 2)
+			},
+		},
+		{
+			name: "second_pane_command_error_aborts_with_500",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{
+					{ID: "pane1"}, {ID: "pane2"},
+				}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane1").Return([]*db.Command{}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane2").Return(nil, errors.New("db down"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			tt.setupStore(store)
+			w := doRequest(t, newServer(t, store, 0), http.MethodGet, "/api/sessions", nil)
+			assert.Equal(t, tt.wantStatus, w.Code)
+			if tt.check != nil {
+				tt.check(t, w)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/tags
+// ---------------------------------------------------------------------------
+
+func TestHandleGetTags(t *testing.T) {
+	tests := []struct {
+		name       string
+		setupStore func(*dbmocks.MockStore)
+		wantStatus int
+		check      func(*testing.T, *httptest.ResponseRecorder)
+	}{
+		{
+			name: "store_fails",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListAllTagsWithCommands(mock.Anything).Return(nil, errors.New("db down"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "no_tags_returns_empty_array",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListAllTagsWithCommands(mock.Anything).Return([]*db.TagWithCommand{}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var got []any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
+				assert.Empty(t, got)
+			},
+		},
+		{
+			name: "integer_ids_serialised_as_strings",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListAllTagsWithCommands(mock.Anything).Return([]*db.TagWithCommand{
+					{ID: 7, CommandID: 42, ShortID: "abc0001", Label: "recon",
+						CommandText: "nmap -sC 10.0.0.1", PaneID: "pane1", CreatedAt: 1_700_000_000_000},
+				}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var got []map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
+				require.Len(t, got, 1)
+				assert.Equal(t, "7", got[0]["id"])
+				assert.Equal(t, "42", got[0]["commandId"])
+			},
+		},
+		{
+			name: "response_fields_match_source_fields",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListAllTagsWithCommands(mock.Anything).Return([]*db.TagWithCommand{
+					{ID: 1, CommandID: 10, ShortID: "def0002", Label: "lateral-movement",
+						CommandText: "ssh user@10.0.0.5", PaneID: "pane-xyz", CreatedAt: 0},
+				}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var got []map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&got))
+				tag := got[0]
+				assert.Equal(t, "def0002", tag["shortId"])
+				assert.Equal(t, "lateral-movement", tag["label"])
+				assert.Equal(t, "ssh user@10.0.0.5", tag["commandText"])
+				assert.Equal(t, "pane-xyz", tag["paneId"])
+				assert.NotEmpty(t, tag["createdAt"]) // RFC3339 string
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			tt.setupStore(store)
+			w := doRequest(t, newServer(t, store, 0), http.MethodGet, "/api/tags", nil)
+			assert.Equal(t, tt.wantStatus, w.Code)
+			if tt.check != nil {
+				tt.check(t, w)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/commands/{id}/output
+// ---------------------------------------------------------------------------
+
+func TestHandleGetOutput(t *testing.T) {
+	tests := []struct {
+		name       string
+		shortID    string
+		setupStore func(*dbmocks.MockStore)
+		wantStatus int
+		check      func(*testing.T, *httptest.ResponseRecorder)
+	}{
+		{
+			name:    "command_not_found",
+			shortID: "abc0001",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(nil, db.ErrNotFound)
+			},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name:    "get_command_fails",
+			shortID: "abc0001",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(nil, errors.New("db down"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:    "get_chunks_fails",
+			shortID: "abc0001",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(&db.Command{ID: 1}, nil)
+				m.EXPECT().GetOutputChunks(mock.Anything, int64(1)).Return(nil, errors.New("db down"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name:    "no_chunks_returns_200_empty_body_with_text_content_type",
+			shortID: "abc0001",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(&db.Command{ID: 1}, nil)
+				m.EXPECT().GetOutputChunks(mock.Anything, int64(1)).Return([]*db.OutputChunk{}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				assert.Equal(t, "text/plain; charset=utf-8", w.Header().Get("Content-Type"))
+				assert.Empty(t, w.Body.Bytes())
+			},
+		},
+		{
+			name:    "multiple_chunks_concatenated_in_order",
+			shortID: "abc0001",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(&db.Command{ID: 1}, nil)
+				m.EXPECT().GetOutputChunks(mock.Anything, int64(1)).Return([]*db.OutputChunk{
+					{Data: []byte("hello ")},
+					{Data: []byte("world\n")},
+				}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				assert.Equal(t, "text/plain; charset=utf-8", w.Header().Get("Content-Type"))
+				assert.Equal(t, "hello world\n", w.Body.String())
+			},
+		},
+		{
+			name:    "raw_ansi_bytes_passed_through_unmodified",
+			shortID: "abc0001",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(&db.Command{ID: 1}, nil)
+				m.EXPECT().GetOutputChunks(mock.Anything, int64(1)).Return([]*db.OutputChunk{
+					{Data: []byte("\x1b[1;32mok\x1b[0m")},
+				}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				assert.Equal(t, []byte("\x1b[1;32mok\x1b[0m"), w.Body.Bytes())
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			tt.setupStore(store)
+			req := httptest.NewRequest(http.MethodGet, "/api/commands/"+tt.shortID+"/output", nil)
+			w := httptest.NewRecorder()
+			newServer(t, store, 0).Handler().ServeHTTP(w, req)
+			assert.Equal(t, tt.wantStatus, w.Code)
+			if tt.check != nil {
+				tt.check(t, w)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/config
+// ---------------------------------------------------------------------------
+
+func TestHandleGetConfig(t *testing.T) {
+	viper.Set("ghostwriter.url", "https://gw.example.com")
+	viper.Set("ghostwriter.token", "tok-abc123")
+	viper.Set("sync.interval_seconds", 60)
+	viper.Set("log.level", "debug")
+
+	store := dbmocks.NewMockStore(t)
+	w := doRequest(t, newServer(t, store, 0), http.MethodGet, "/api/config", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var cfg map[string]map[string]any
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
+
+	// All expected groups present.
+	for _, group := range []string{"ghostwriter", "sync", "log", "cast"} {
+		assert.Contains(t, cfg, group, "missing group %q", group)
+	}
+
+	// Spot-check that values reflect what was set in Viper.
+	assert.Equal(t, "https://gw.example.com", cfg["ghostwriter"]["url"])
+	assert.Equal(t, "tok-abc123", cfg["ghostwriter"]["token"])
+	assert.Equal(t, "debug", cfg["log"]["level"])
+
+	// Non-whitelisted keys absent (db.path, server.host, etc.).
+	assert.NotContains(t, cfg, "db")
+	assert.NotContains(t, cfg, "server")
+	assert.NotContains(t, cfg, "api")
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/config
+// ---------------------------------------------------------------------------
+
+func TestHandleUpdateConfig(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       any
+		wantStatus int
+		check      func(*testing.T, *httptest.ResponseRecorder)
+	}{
+		{
+			name:       "bad_json",
+			body:       "not-json",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "empty_body_returns_current_config_unchanged",
+			body:       map[string]any{},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var cfg map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
+				assert.Contains(t, cfg, "ghostwriter")
+				assert.Contains(t, cfg, "sync")
+			},
+		},
+		{
+			name: "known_key_reflected_in_response",
+			body: map[string]any{
+				"ghostwriter": map[string]any{"url": "https://updated.example.com"},
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var cfg map[string]map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
+				assert.Equal(t, "https://updated.example.com", cfg["ghostwriter"]["url"])
+			},
+		},
+		{
+			name: "unknown_group_silently_ignored",
+			body: map[string]any{
+				"danger": map[string]any{"exec": "rm -rf /"},
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var cfg map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
+				assert.NotContains(t, cfg, "danger")
+			},
+		},
+		{
+			name: "unknown_key_within_known_group_silently_ignored",
+			body: map[string]any{
+				"ghostwriter": map[string]any{"injected_field": "evil"},
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var cfg map[string]map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
+				assert.NotContains(t, cfg["ghostwriter"], "injected_field")
+			},
+		},
+		{
+			name: "write_config_failure_is_non_fatal",
+			// viper.WriteConfig() always fails in tests (no config file loaded).
+			// The handler must still return 200 with the in-memory updated value.
+			body:       map[string]any{"sync": map[string]any{"interval_seconds": 999}},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var cfg map[string]map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
+				assert.InDelta(t, float64(999), cfg["sync"]["interval_seconds"], 0.001)
+			},
+		},
+		{
+			name: "multiple_groups_updated_atomically",
+			body: map[string]any{
+				"ghostwriter": map[string]any{"url": "https://multi.example.com", "token": "tok-new"},
+				"log":         map[string]any{"level": "warn"},
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var cfg map[string]map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
+				assert.Equal(t, "https://multi.example.com", cfg["ghostwriter"]["url"])
+				assert.Equal(t, "tok-new", cfg["ghostwriter"]["token"])
+				assert.Equal(t, "warn", cfg["log"]["level"])
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			w := doRequest(t, newServer(t, store, 0), http.MethodPost, "/api/config", tt.body)
+			assert.Equal(t, tt.wantStatus, w.Code)
+			if tt.check != nil {
+				tt.check(t, w)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// POST /api/cast
+// ---------------------------------------------------------------------------
+
+func TestHandleExportCast(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       any
+		setupStore func(*dbmocks.MockStore, string)
+		wantStatus int
+		check      func(*testing.T, *httptest.ResponseRecorder)
+	}{
+		{
+			name:       "bad_json",
+			body:       "not-json",
+			setupStore: func(_ *dbmocks.MockStore, _ string) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing_id_field",
+			body:       map[string]any{},
+			setupStore: func(_ *dbmocks.MockStore, _ string) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "command_not_found",
+			body: map[string]any{"id": "abc0001"},
+			setupStore: func(m *dbmocks.MockStore, _ string) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(nil, db.ErrNotFound)
+			},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "store_error_returns_500",
+			body: map[string]any{"id": "abc0001"},
+			setupStore: func(m *dbmocks.MockStore, _ string) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(nil, errors.New("db down"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "success_writes_cast_file_and_returns_path",
+			body: map[string]any{"id": "abc0001"},
+			setupStore: func(m *dbmocks.MockStore, tmpDir string) {
+				viper.Set("cast.dir", tmpDir)
+				cmd := &db.Command{
+					ID: 1, ShortID: "abc0001", PaneID: "pane1",
+					Seq: 1, Command: "ls -la", StartedAt: 1_000_000,
+				}
+				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(cmd, nil)
+				m.EXPECT().GetPane(mock.Anything, "pane1").Return(
+					&db.Pane{ID: "pane1", Width: 220, Height: 50}, nil)
+				m.EXPECT().GetCommandsByPaneSeqRange(mock.Anything, "pane1", int64(1), int64(1)).
+					Return([]*db.Command{cmd}, nil)
+				m.EXPECT().GetOutputChunks(mock.Anything, int64(1)).
+					Return([]*db.OutputChunk{}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var resp struct {
+					Success bool   `json:"success"`
+					Path    string `json:"path"`
+				}
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+				assert.True(t, resp.Success)
+				assert.NotEmpty(t, resp.Path)
+				assert.FileExists(t, resp.Path)
+			},
+		},
+		{
+			name: "single_command_first_and_last_short_id_are_identical",
+			// Regression guard: FirstShortID==LastShortID must not trigger
+			// "commands belong to different panes" in cast.Synthesize.
+			body: map[string]any{"id": "def0002"},
+			setupStore: func(m *dbmocks.MockStore, tmpDir string) {
+				viper.Set("cast.dir", tmpDir)
+				cmd := &db.Command{
+					ID: 2, ShortID: "def0002", PaneID: "pane2",
+					Seq: 5, Command: "id", StartedAt: 5_000_000,
+				}
+				m.EXPECT().GetCommandByShortID(mock.Anything, "def0002").Return(cmd, nil)
+				m.EXPECT().GetPane(mock.Anything, "pane2").Return(
+					&db.Pane{ID: "pane2", Width: 80, Height: 24}, nil)
+				m.EXPECT().GetCommandsByPaneSeqRange(mock.Anything, "pane2", int64(5), int64(5)).
+					Return([]*db.Command{cmd}, nil)
+				m.EXPECT().GetOutputChunks(mock.Anything, int64(2)).
+					Return([]*db.OutputChunk{{Data: []byte("uid=0(root)\n")}}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var resp struct {
+					Success bool   `json:"success"`
+					Path    string `json:"path"`
+				}
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+				assert.True(t, resp.Success)
+				assert.FileExists(t, resp.Path)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store := dbmocks.NewMockStore(t)
+			tt.setupStore(store, tmpDir)
+			w := doRequest(t, newServer(t, store, 0), http.MethodPost, "/api/cast", tt.body)
+			assert.Equal(t, tt.wantStatus, w.Code)
+			if tt.check != nil {
+				tt.check(t, w)
+			}
+		})
+	}
 }

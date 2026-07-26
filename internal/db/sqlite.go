@@ -21,7 +21,6 @@ CREATE TABLE IF NOT EXISTS commands (
     id         INTEGER PRIMARY KEY,
     short_id   TEXT    NOT NULL UNIQUE,
     pane_id    TEXT    NOT NULL REFERENCES panes(id),
-    project_id TEXT    NOT NULL DEFAULT '',
     seq        INTEGER NOT NULL,
     command    TEXT    NOT NULL,
     started_at INTEGER NOT NULL,
@@ -132,6 +131,8 @@ type migration struct {
 //	   DEFAULT 220 matches the Ghostwriter recommended terminal width.
 //	3: add height column to panes for .cast terminal dimension metadata.
 //	   DEFAULT 50 matches the Ghostwriter recommended terminal height.
+//	4: add command_metadata table for operator-supplied annotations.
+//	5: drop project_id column from commands (now derived via JOIN on panes).
 var migrations = []migration{
 	{
 		version: 1,
@@ -145,6 +146,65 @@ var migrations = []migration{
 		version: 3,
 		fn:      addColumnIfMissing("panes", "height", "INTEGER NOT NULL DEFAULT 50"),
 	},
+	{
+		version: 4,
+		sql: `CREATE TABLE IF NOT EXISTS command_metadata (
+			command_id     INTEGER PRIMARY KEY REFERENCES commands(id),
+			operator       TEXT    NOT NULL DEFAULT '',
+			tool           TEXT    NOT NULL DEFAULT '',
+			user_context   TEXT    NOT NULL DEFAULT '',
+			source_ip      TEXT    NOT NULL DEFAULT '',
+			destination_ip TEXT    NOT NULL DEFAULT '',
+			description    TEXT    NOT NULL DEFAULT '',
+			comments       TEXT    NOT NULL DEFAULT '',
+			updated_at     INTEGER NOT NULL DEFAULT 0
+		)`,
+	},
+	{
+		version: 5,
+		fn:      dropColumnIfPresent("commands", "project_id"),
+	},
+}
+
+// dropColumnIfPresent returns a migration function that removes column from
+// table only when the column exists, checked via PRAGMA table_info.
+// Requires SQLite 3.35.0+ (bundled via modernc.org/sqlite).
+//
+// table and column are hardcoded migration identifiers — not user input.
+func dropColumnIfPresent(table, column string) func(*sql.DB) error {
+	return func(db *sql.DB) error {
+		// Drain and explicitly close rows before calling Exec — with
+		// SetMaxOpenConns(1) calling Exec while a cursor is open deadlocks.
+		rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table)) //nolint:gosec
+		if err != nil {
+			return fmt.Errorf("PRAGMA table_info(%s): %w", table, err)
+		}
+		found := false
+		for rows.Next() {
+			var cid int
+			var name, typ string
+			var notNull int
+			var dfltVal any
+			var pk int
+			if err := rows.Scan(&cid, &name, &typ, &notNull, &dfltVal, &pk); err != nil {
+				_ = rows.Close() //nolint:sqlclosecheck // explicit close required; defer would leave cursor open during subsequent db.Exec, deadlocking SetMaxOpenConns(1)
+				return fmt.Errorf("scan table_info: %w", err)
+			}
+			if name == column {
+				found = true
+				// do NOT break early — exhaust the cursor so Close is cheap
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		// G201: table and column are hardcoded identifiers — no injection risk.
+		_, err = db.Exec(fmt.Sprintf(`ALTER TABLE %s DROP COLUMN %s`, table, column)) //nolint:gosec
+		return err
+	}
 }
 
 // addColumnIfMissing returns a migration function that adds column to table
@@ -154,11 +214,13 @@ var migrations = []migration{
 // table, column, and definition are hardcoded migration identifiers — not user input.
 func addColumnIfMissing(table, column, definition string) func(*sql.DB) error {
 	return func(db *sql.DB) error {
+		// Drain and explicitly close rows before calling Exec — with
+		// SetMaxOpenConns(1) calling Exec while a cursor is open deadlocks.
 		rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table)) //nolint:gosec
 		if err != nil {
 			return fmt.Errorf("PRAGMA table_info(%s): %w", table, err)
 		}
-		defer rows.Close() //nolint:errcheck
+		found := false
 		for rows.Next() {
 			var cid int
 			var name, typ string
@@ -166,14 +228,18 @@ func addColumnIfMissing(table, column, definition string) func(*sql.DB) error {
 			var dfltVal any
 			var pk int
 			if err := rows.Scan(&cid, &name, &typ, &notNull, &dfltVal, &pk); err != nil {
+				_ = rows.Close() //nolint:sqlclosecheck // explicit close required; defer would leave cursor open during subsequent db.Exec, deadlocking SetMaxOpenConns(1)
 				return fmt.Errorf("scan table_info: %w", err)
 			}
 			if name == column {
-				return nil // already exists, nothing to do
+				found = true
 			}
 		}
-		if err := rows.Err(); err != nil {
+		if err := rows.Close(); err != nil {
 			return err
+		}
+		if found {
+			return nil // already exists, nothing to do
 		}
 		// G201: table and column are hardcoded identifiers — no injection risk.
 		_, err = db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, definition)) //nolint:gosec
@@ -239,6 +305,30 @@ func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, projectID s
 		paneID, projectID, createdAt, width, height,
 	)
 	return err
+}
+
+func (s *sqliteStore) ListPanes(ctx context.Context) (panes []*Pane, err error) {
+	rows, qErr := s.db.QueryContext(ctx,
+		`SELECT id, project_id, created_at, width, height FROM panes ORDER BY created_at DESC`,
+	)
+	if qErr != nil {
+		return nil, qErr
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	for rows.Next() {
+		p := &Pane{}
+		if err = rows.Scan(&p.ID, &p.ProjectID, &p.CreatedAt, &p.Width, &p.Height); err != nil {
+			return nil, err
+		}
+		panes = append(panes, p)
+	}
+	err = rows.Err()
+	return
 }
 
 func (s *sqliteStore) GetPane(ctx context.Context, paneID string) (*Pane, error) {
@@ -359,8 +449,8 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 		return fmt.Errorf("db: delete reservation: %w", err)
 	}
 
-	// Propagate project_id from the owning pane to the command row so
-	// the sync layer can group commands by project without a JOIN.
+	// Fetch project_id from the owning pane to populate the in-memory struct
+	// (not stored in the commands table — derived via JOIN at read time).
 	var projectID string
 	if err = tx.QueryRowContext(ctx,
 		`SELECT project_id FROM panes WHERE id = ?`, cmd.PaneID,
@@ -376,9 +466,9 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO commands (short_id, pane_id, project_id, seq, command, started_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		shortID, cmd.PaneID, projectID, seq, cmd.Command, cmd.StartedAt,
+		`INSERT INTO commands (short_id, pane_id, seq, command, started_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		shortID, cmd.PaneID, seq, cmd.Command, cmd.StartedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("db: insert command: %w", err)
@@ -387,7 +477,7 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 	cmd.ID, _ = res.LastInsertId()
 	cmd.Seq = seq
 	cmd.ShortID = shortID
-	cmd.ProjectID = projectID
+	cmd.ProjectID = projectID // derived from pane, not stored
 
 	return tx.Commit()
 }
@@ -396,8 +486,10 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 	cmd := &Command{}
 	var syncedGW int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, short_id, pane_id, project_id, seq, command, started_at, ended_at, exit_code, synced_gw
-		 FROM commands WHERE short_id = ?`,
+		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command,
+		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
+		 FROM commands c JOIN panes p ON p.id = c.pane_id
+		 WHERE c.short_id = ?`,
 		shortID,
 	).Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.ProjectID, &cmd.Seq, &cmd.Command,
 		&cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW)
@@ -413,8 +505,10 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 
 func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT id, short_id, pane_id, project_id, seq, command, started_at, ended_at, exit_code, synced_gw
-		 FROM commands WHERE pane_id = ? ORDER BY seq`,
+		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command,
+		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
+		 FROM commands c JOIN panes p ON p.id = c.pane_id
+		 WHERE c.pane_id = ? ORDER BY c.seq`,
 		paneID,
 	)
 	if qErr != nil {
@@ -431,8 +525,10 @@ func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cm
 
 func (s *sqliteStore) GetCommandsByPaneSeqRange(ctx context.Context, paneID string, firstSeq, lastSeq int64) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT id, short_id, pane_id, project_id, seq, command, started_at, ended_at, exit_code, synced_gw
-                 FROM commands WHERE pane_id = ? AND seq >= ? AND seq <= ? ORDER BY seq`,
+		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command,
+		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
+		 FROM commands c JOIN panes p ON p.id = c.pane_id
+		 WHERE c.pane_id = ? AND c.seq >= ? AND c.seq <= ? ORDER BY c.seq`,
 		paneID, firstSeq, lastSeq,
 	)
 	if qErr != nil {
@@ -449,8 +545,10 @@ func (s *sqliteStore) GetCommandsByPaneSeqRange(ctx context.Context, paneID stri
 
 func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT id, short_id, pane_id, project_id, seq, command, started_at, ended_at, exit_code, synced_gw
-		 FROM commands WHERE synced_gw = 0 AND ended_at IS NOT NULL ORDER BY id`,
+		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command,
+		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
+		 FROM commands c JOIN panes p ON p.id = c.pane_id
+		 WHERE c.synced_gw = 0 AND c.ended_at IS NOT NULL ORDER BY c.id`,
 	)
 	if qErr != nil {
 		return nil, qErr
@@ -588,6 +686,102 @@ func (s *sqliteStore) GetTagsByCommand(ctx context.Context, commandID int64) (ta
 	}
 	err = rows.Err()
 	return
+}
+
+func (s *sqliteStore) RemoveTag(ctx context.Context, commandID int64, label string) error {
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM tags WHERE command_id = ? AND label = ?`,
+		commandID, label,
+	)
+	return err
+}
+
+func (s *sqliteStore) ListAllTags(ctx context.Context) (tags []*Tag, err error) {
+	rows, qErr := s.db.QueryContext(ctx,
+		`SELECT id, command_id, label, created_at FROM tags ORDER BY created_at DESC`,
+	)
+	if qErr != nil {
+		return nil, qErr
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	for rows.Next() {
+		t := &Tag{}
+		if err = rows.Scan(&t.ID, &t.CommandID, &t.Label, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		tags = append(tags, t)
+	}
+	err = rows.Err()
+	return
+}
+
+func (s *sqliteStore) ListAllTagsWithCommands(ctx context.Context) (tags []*TagWithCommand, err error) {
+	rows, qErr := s.db.QueryContext(ctx,
+		`SELECT t.id, t.command_id, c.short_id, t.label, c.command, c.pane_id, t.created_at
+		 FROM tags t JOIN commands c ON c.id = t.command_id
+		 ORDER BY t.created_at DESC`,
+	)
+	if qErr != nil {
+		return nil, qErr
+	}
+	defer func() {
+		if cerr := rows.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	for rows.Next() {
+		t := &TagWithCommand{}
+		if err = rows.Scan(&t.ID, &t.CommandID, &t.ShortID, &t.Label, &t.CommandText, &t.PaneID, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		tags = append(tags, t)
+	}
+	err = rows.Err()
+	return
+}
+
+// --- Metadata ---
+
+func (s *sqliteStore) GetCommandMetadata(ctx context.Context, commandID int64) (*CommandMetadata, error) {
+	m := &CommandMetadata{CommandID: commandID}
+	err := s.db.QueryRowContext(ctx,
+		`SELECT operator, tool, user_context, source_ip, destination_ip, description, comments, updated_at
+		 FROM command_metadata WHERE command_id = ?`,
+		commandID,
+	).Scan(&m.Operator, &m.Tool, &m.UserContext, &m.SourceIP, &m.DestinationIP, &m.Description, &m.Comments, &m.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return m, nil
+}
+
+func (s *sqliteStore) UpsertCommandMetadata(ctx context.Context, m *CommandMetadata) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO command_metadata
+		     (command_id, operator, tool, user_context, source_ip, destination_ip, description, comments, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(command_id) DO UPDATE SET
+		     operator       = excluded.operator,
+		     tool           = excluded.tool,
+		     user_context   = excluded.user_context,
+		     source_ip      = excluded.source_ip,
+		     destination_ip = excluded.destination_ip,
+		     description    = excluded.description,
+		     comments       = excluded.comments,
+		     updated_at     = excluded.updated_at`,
+		m.CommandID, m.Operator, m.Tool, m.UserContext, m.SourceIP,
+		m.DestinationIP, m.Description, m.Comments, m.UpdatedAt,
+	)
+	return err
 }
 
 // --- Helpers ---

@@ -29,14 +29,16 @@ export function displayValue(value: string): string {
 
 // TODO: replace hard-coded key detection with a config-driven sensitive field list
 export function maskSensitive(key: string, value: ConfigValue): string {
+  if (typeof value !== 'string') return String(value)
   const lowerKey = key.toLowerCase()
   if (
     lowerKey.includes('token') ||
     lowerKey.includes('secret') ||
-    lowerKey.includes('password')
+    lowerKey.includes('password') ||
+    lowerKey.includes('_key') ||
+    lowerKey.includes('credential')
   ) {
-    const str = String(value)
-    return str.length > 4 ? `••••••••${str.slice(-4)}` : '••••••••'
+    return '*****'
   }
-  return String(value)
+  return value
 }

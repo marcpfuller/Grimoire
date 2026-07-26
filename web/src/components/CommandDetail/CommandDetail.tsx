@@ -26,7 +26,7 @@ export function CommandDetail({ command, session, addToast }: CommandDetailProps
 
   const handleExport = () => {
     API.exportCast(command.id)
-      .then(() => addToast({ type: 'success', title: 'Export successful', detail: `Exported ${command.id}.cast` }))
+      .then(res => addToast({ type: 'success', title: 'Export successful', detail: res.path }))
       .catch(() => addToast({ type: 'error', title: 'Export failed', detail: `Could not export ${command.id}` }))
   }
 

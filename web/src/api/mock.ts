@@ -1,4 +1,5 @@
 import type { ApiClient, DaemonHealth, AppConfig, Session, Tag } from './types'
+import type { MetadataResponse } from './generated'
 
 const MOCK_SESSIONS: Session[] = [
   {
@@ -46,21 +47,75 @@ PORT     STATE SERVICE VERSION
 |   Capabilities flags: 65535`
 
 const MOCK_CONFIG: AppConfig = {
-  daemon: { sync_interval_ms: 5000, max_pane_history: 1000, listen_addr: '127.0.0.1:8080' },
   ghostwriter: { url: 'https://ghostwriter.example.com', token: 'gw_sk-1234567890abcdef' },
-  cast: { dir: '/tmp/grimoire/casts', compress: true },
+  sync: { interval_seconds: 30 },
+  cast: { dir: '/tmp/grimoire/casts' },
   log: { level: 'info', dir: '.', max_mb: 50, max_backups: 5 },
 }
 
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+
+const MOCK_METADATA: Record<string, MetadataResponse> = {
+  abc0001: {
+    operator: 'jsmith',
+    tool: 'nmap',
+    userContext: 'CORP\\jsmith',
+    sourceIp: '10.10.1.5',
+    destinationIp: '10.10.1.20',
+    description: 'Initial port scan of target',
+    comments: '',
+    tags: ['att&ck:T1046'],
+  },
+  abc0002: {
+    operator: 'jsmith',
+    tool: 'ffuf',
+    userContext: '',
+    sourceIp: '10.10.1.5',
+    destinationIp: '10.0.0.5',
+    description: '',
+    comments: '',
+    tags: [],
+  },
+}
+
+const DEFAULT_METADATA: MetadataResponse = {
+  operator: '',
+  tool: '',
+  userContext: '',
+  sourceIp: '',
+  destinationIp: '',
+  description: '',
+  comments: '',
+  tags: [],
+}
 
 export const MockAPI: ApiClient = {
   fetchHealth: () =>
     delay(100).then(() => ({ status: 'Connected', errors: 0, warnings: 0, version: 'v0.1.0-dev' } satisfies DaemonHealth)),
   fetchConfig: () => delay(100).then(() => MOCK_CONFIG),
   updateConfig: config => delay(300).then(() => config),
-  exportCast: _id => delay(300).then(() => ({ success: true })),
+  exportCast: _id => delay(300).then(() => ({ success: true, path: '/tmp/grimoire/casts/grimoire-export.cast' })),
   fetchSessions: () => delay(100).then(() => MOCK_SESSIONS),
   fetchTags: () => delay(100).then(() => MOCK_TAGS),
   fetchOutput: _commandId => delay(100).then(() => MOCK_OUTPUT),
+  fetchCommandMetadata: commandId =>
+    delay(100).then(() => MOCK_METADATA[commandId] ?? { ...DEFAULT_METADATA, tool: commandId.split('').shift() ?? '' }),
+  patchCommandMetadata: (commandId, req) =>
+    delay(300).then(() => {
+      const current = MOCK_METADATA[commandId] ?? { ...DEFAULT_METADATA }
+      MOCK_METADATA[commandId] = {
+        ...current,
+        ...(req.operator !== undefined ? { operator: req.operator } : {}),
+        ...(req.tool !== undefined ? { tool: req.tool } : {}),
+        ...(req.userContext !== undefined ? { userContext: req.userContext } : {}),
+        ...(req.sourceIp !== undefined ? { sourceIp: req.sourceIp } : {}),
+        ...(req.destinationIp !== undefined ? { destinationIp: req.destinationIp } : {}),
+        ...(req.description !== undefined ? { description: req.description } : {}),
+        ...(req.comments !== undefined ? { comments: req.comments } : {}),
+        tags: [
+          ...current.tags.filter(t => !(req.removeTags ?? []).includes(t)),
+          ...(req.addTags ?? []),
+        ],
+      }
+    }),
 }

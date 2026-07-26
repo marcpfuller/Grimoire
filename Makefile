@@ -29,9 +29,8 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 # Generate TypeScript types from Go API response structs.
-# Requires: go install github.com/gzuidhof/tygo@latest
 typegen:
-	tygo generate
+	go tool tygo generate
 
 mocks:
 	go tool mockery

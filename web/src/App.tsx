@@ -68,7 +68,7 @@ export default function App() {
           <CommandDetail command={selectedCommand} session={selectedSession} addToast={addToast} />
         )}
       </div>
-      <StatusBar health={health} gwHealth={gwHealth} />
+      <StatusBar health={health} gwHealth={gwHealth} onGwClick={() => setActiveView('settings')} />
       <ToastContainer toasts={toasts} removeToast={removeToast} />
     </div>
   )

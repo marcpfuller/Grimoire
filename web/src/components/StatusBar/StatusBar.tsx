@@ -5,6 +5,7 @@ import { GhostIcon } from '../Icons/GhostIcon'
 export interface StatusBarProps {
   health: DaemonHealth
   gwHealth: GwHealth
+  onGwClick?: () => void
 }
 
 const DAEMON_COLOR: Record<string, string> = {
@@ -17,7 +18,7 @@ const GW_COLOR: Record<string, string> = {
   Disconnected: '#6b6b6b',
 }
 
-export function StatusBar({ health, gwHealth }: StatusBarProps) {
+export function StatusBar({ health, gwHealth, onGwClick }: StatusBarProps) {
   const daemonColor = DAEMON_COLOR[health.status] ?? '#cca700'
   const gwColor = GW_COLOR[gwHealth.status] ?? '#6b6b6b'
 
@@ -38,7 +39,8 @@ export function StatusBar({ health, gwHealth }: StatusBarProps) {
         <div
           className="inline-flex items-center gap-[4px] cursor-pointer hover:bg-white/20 px-1.5 h-full transition-colors"
           style={{ color: gwColor }}
-          title={`Ghostwriter · ${gwHealth.status}`}
+          title={`Ghostwriter · ${gwHealth.status} — click to open settings`}
+          onClick={onGwClick}
         >
           <GhostIcon color={gwColor} />
           Ghostwriter

@@ -41,8 +41,10 @@ export interface ApiClient {
   fetchHealth: () => Promise<import('./generated').HealthResponse>
   fetchConfig: () => Promise<AppConfig>
   updateConfig: (config: AppConfig) => Promise<AppConfig>
-  exportCast: (id: string) => Promise<{ success: boolean }>
+  exportCast: (id: string) => Promise<{ success: boolean; path: string }>
   fetchSessions: () => Promise<import('./generated').SessionResponse[]>
   fetchTags: () => Promise<import('./generated').TagResponse[]>
   fetchOutput: (commandId: string) => Promise<string>
+  fetchCommandMetadata: (commandId: string) => Promise<import('./generated').MetadataResponse>
+  patchCommandMetadata: (commandId: string, req: import('./generated').MetadataUpdateRequest) => Promise<void>
 }
