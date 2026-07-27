@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"github.com/marcpfuller/grimoire/internal/ghostwriter"
 	"github.com/marcpfuller/grimoire/internal/logger"
 	grimsync "github.com/marcpfuller/grimoire/internal/sync"
+	"github.com/marcpfuller/grimoire/web"
 )
 
 var daemonCmd = &cobra.Command{
@@ -68,11 +70,20 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// --- HTTP API server ---
+	// --- HTTP API server + embedded UI ---
 	srv := api.New(store, viper.GetInt("api.max_short_id_retries"), log)
+
+	uiDist, err := fs.Sub(web.Dist, "dist")
+	if err != nil {
+		return fmt.Errorf("ui embed: %w", err)
+	}
+	topMux := http.NewServeMux()
+	topMux.Handle("/api/", srv.Handler())
+	topMux.Handle("/", http.FileServerFS(uiDist))
+
 	httpSrv := &http.Server{
 		Addr:              addr,
-		Handler:           srv.Handler(),
+		Handler:           topMux,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 

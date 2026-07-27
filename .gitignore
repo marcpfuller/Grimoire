@@ -37,8 +37,17 @@ proj_details/
 # Generated mocks (regenerate with: make mocks)
 internal/db/mocks/
 
+# DB and log files
+*.db
+*.log
+
 # Dist directory
 dist/
 
 # casts dir
 casts/
+
+# Web frontend — generated/ephemeral directories
+web/node_modules/
+web/dist/
+web/src/api/generated.ts

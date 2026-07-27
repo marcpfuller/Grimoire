@@ -2,7 +2,7 @@ BINARY_NAME := grim
 BUILD_DIR   := dist
 CMD_PATH    := ./cmd/grim
 
-.PHONY: all build build-linux test test-verbose lint coverage clean mocks tidy
+.PHONY: all build build-linux test test-verbose lint coverage clean mocks tidy typegen
 
 all: build
 
@@ -27,6 +27,10 @@ lint:
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+# Generate TypeScript types from Go API response structs.
+typegen:
+	go tool tygo generate
 
 mocks:
 	go tool mockery
