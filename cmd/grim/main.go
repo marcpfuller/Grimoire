@@ -61,7 +61,11 @@ func initConfig() error {
 	viper.SetDefault("server.host", "127.0.0.1")
 	viper.SetDefault("server.port", 7777)
 	viper.SetDefault("api.max_short_id_retries", 5)
-	viper.SetDefault("db.path", "grimoire.db")
+	if home, err := os.UserHomeDir(); err == nil {
+		viper.SetDefault("db.path", filepath.Join(home, ".grim", "grimoire.db"))
+	} else {
+		viper.SetDefault("db.path", "grimoire.db")
+	}
 	viper.SetDefault("sync.interval_seconds", 30)
 	viper.SetDefault("shell", "")
 	viper.SetDefault("log.dir", ".")

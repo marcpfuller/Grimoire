@@ -38,7 +38,7 @@ proj_details/
 internal/db/mocks/
 
 # DB and log files
-*.db
+*.db*
 *.log
 
 # Dist directory

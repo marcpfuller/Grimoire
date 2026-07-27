@@ -42,7 +42,7 @@ Key settings:
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `db.path` | `grimoire.db` | Path to the SQLite database |
+| `db.path` | `~/.grim/grimoire.db` | Path to the SQLite database |
 | `server.host` | `127.0.0.1` | Daemon listen address |
 | `server.port` | `7777` | Daemon listen port |
 | `ghostwriter.url` | `""` | Ghostwriter instance URL |

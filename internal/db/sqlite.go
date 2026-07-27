@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -71,6 +73,12 @@ type sqliteStore struct {
 // any schema work. A single connection is used so the pragmas remain in effect
 // for the lifetime of the process.
 func Open(path string) (Store, error) {
+	if dir := filepath.Dir(path); dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("db: mkdir %s: %w", dir, err)
+		}
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("db: open %s: %w", path, err)
