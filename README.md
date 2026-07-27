@@ -4,12 +4,25 @@ Grimoire is a local Red Team daemon that captures terminal activity for reportin
 ## Requirements
 
 - Go 1.25+
+- Node.js 20+ (for the frontend build)
 
 ## Build
 
+The frontend must be compiled before the Go binary, because `web/dist/` is embedded at build time:
+
 ```bash
+cd web && npm ci && npm run build && cd ..
 go build -o grim ./cmd/grim
 ```
+
+Or use the Makefile targets:
+
+```bash
+make typegen   # regenerate web/src/api/generated.ts from Go structs
+make build     # go build -o dist/grim
+```
+
+> **Note:** `web/dist/` and `web/src/api/generated.ts` are gitignored build artifacts. Run `make typegen` after changing any Go response struct, and run the frontend build step before `go build`.
 
 Move the binary somewhere on your `$PATH`:
 
@@ -35,6 +48,7 @@ Key settings:
 | `ghostwriter.url` | `""` | Ghostwriter instance URL |
 | `ghostwriter.token` | `""` | Ghostwriter API token |
 | `cast.dir` | `""` | Directory for `.cast` output (defaults to `casts/` next to `db.path`) |
+| `sync.interval_seconds` | `60` | How often the daemon pushes pending commands to Ghostwriter |
 | `log.dir` | `.` | Directory for the log file |
 
 Pass a custom config with `--config`:
@@ -75,6 +89,20 @@ grim service uninstall
 grim daemon start
 ```
 
+## Web UI
+
+When the daemon is running, open `http://127.0.0.1:7777` in a browser. The React dashboard is compiled into the binary — no separate server or Docker container is needed.
+
+The UI provides:
+
+- **Session Explorer** — commands grouped by pane, with timestamps and duration
+- **Command Detail** — raw terminal output, operator annotations (title, description, MITRE tags), and one-click Asciinema export
+- **Tags View** — all tagged commands across all sessions
+- **Settings** — edit `ghostwriter.url`, `ghostwriter.token`, and sync interval in-browser; changes are written back to `config.yaml`
+- **GW Status** — the status bar shows live Ghostwriter connectivity; click it to jump to Settings
+
+The UI runs in mock mode during development (`VITE_USE_MOCK=true`) so the daemon is not required for frontend iteration.
+
 ## Start an Instrumented Shell
 
 ```bash
@@ -94,7 +122,7 @@ grim tag --id a1b2c3d "Credential Access" "TA0006"
 
 ## Synthesize a `.cast` Recording
 
-Export a range of commands as an [Asciinema v2](https://docs.asciinema.org/manual/asciicast/v2/) file:
+Export a range of commands as an [Asciinema v2](https://docs.asciinema.org/manual/asciicast/v2/) file from the CLI:
 
 ```bash
 grim cast <first-id> <last-id>
@@ -107,3 +135,5 @@ Override the output path for a one-off export:
 ```bash
 grim cast abc0001 abc0025 --out ~/recordings/recon.cast
 ```
+
+Single-command exports are also supported from the Web UI **Command Detail** panel — click **Export .cast** to write the file to `cast.dir` and see the path in a toast notification.
