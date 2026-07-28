@@ -978,14 +978,14 @@ func TestHandleExportCast(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "missing_id_field",
+			name:       "missing_ids_field",
 			body:       map[string]any{},
 			setupStore: func(_ *dbmocks.MockStore, _ string) {},
 			wantStatus: http.StatusBadRequest,
 		},
 		{
 			name: "command_not_found",
-			body: map[string]any{"id": "abc0001"},
+			body: map[string]any{"ids": []string{"abc0001"}},
 			setupStore: func(m *dbmocks.MockStore, _ string) {
 				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(nil, db.ErrNotFound)
 			},
@@ -993,15 +993,15 @@ func TestHandleExportCast(t *testing.T) {
 		},
 		{
 			name: "store_error_returns_500",
-			body: map[string]any{"id": "abc0001"},
+			body: map[string]any{"ids": []string{"abc0001"}},
 			setupStore: func(m *dbmocks.MockStore, _ string) {
 				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(nil, errors.New("db down"))
 			},
 			wantStatus: http.StatusInternalServerError,
 		},
 		{
-			name: "success_writes_cast_file_and_returns_path",
-			body: map[string]any{"id": "abc0001"},
+			name: "success_single_id_writes_cast_file_and_returns_path",
+			body: map[string]any{"ids": []string{"abc0001"}},
 			setupStore: func(m *dbmocks.MockStore, tmpDir string) {
 				viper.Set("cast.dir", tmpDir)
 				cmd := &db.Command{
@@ -1011,8 +1011,6 @@ func TestHandleExportCast(t *testing.T) {
 				m.EXPECT().GetCommandByShortID(mock.Anything, "abc0001").Return(cmd, nil)
 				m.EXPECT().GetPane(mock.Anything, "pane1").Return(
 					&db.Pane{ID: "pane1", Width: 220, Height: 50}, nil)
-				m.EXPECT().GetCommandsByPaneSeqRange(mock.Anything, "pane1", int64(1), int64(1)).
-					Return([]*db.Command{cmd}, nil)
 				m.EXPECT().GetOutputChunks(mock.Anything, int64(1)).
 					Return([]*db.OutputChunk{}, nil)
 			},
@@ -1029,23 +1027,26 @@ func TestHandleExportCast(t *testing.T) {
 			},
 		},
 		{
-			name: "single_command_first_and_last_short_id_are_identical",
-			// Regression guard: FirstShortID==LastShortID must not trigger
-			// "commands belong to different panes" in cast.Synthesize.
-			body: map[string]any{"id": "def0002"},
+			name: "success_multiple_ids_writes_cast_file",
+			body: map[string]any{"ids": []string{"def0002", "def0005"}},
 			setupStore: func(m *dbmocks.MockStore, tmpDir string) {
 				viper.Set("cast.dir", tmpDir)
-				cmd := &db.Command{
+				cmd2 := &db.Command{
 					ID: 2, ShortID: "def0002", PaneID: "pane2",
-					Seq: 5, Command: "id", StartedAt: 5_000_000,
+					Seq: 2, Command: "id", StartedAt: 2_000_000,
 				}
-				m.EXPECT().GetCommandByShortID(mock.Anything, "def0002").Return(cmd, nil)
+				cmd5 := &db.Command{
+					ID: 5, ShortID: "def0005", PaneID: "pane2",
+					Seq: 5, Command: "whoami", StartedAt: 5_000_000,
+				}
+				m.EXPECT().GetCommandByShortID(mock.Anything, "def0002").Return(cmd2, nil)
+				m.EXPECT().GetCommandByShortID(mock.Anything, "def0005").Return(cmd5, nil)
 				m.EXPECT().GetPane(mock.Anything, "pane2").Return(
 					&db.Pane{ID: "pane2", Width: 80, Height: 24}, nil)
-				m.EXPECT().GetCommandsByPaneSeqRange(mock.Anything, "pane2", int64(5), int64(5)).
-					Return([]*db.Command{cmd}, nil)
 				m.EXPECT().GetOutputChunks(mock.Anything, int64(2)).
 					Return([]*db.OutputChunk{{Data: []byte("uid=0(root)\n")}}, nil)
+				m.EXPECT().GetOutputChunks(mock.Anything, int64(5)).
+					Return([]*db.OutputChunk{{Data: []byte("root\n")}}, nil)
 			},
 			wantStatus: http.StatusOK,
 			check: func(t *testing.T, w *httptest.ResponseRecorder) {

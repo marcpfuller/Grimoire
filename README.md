@@ -122,18 +122,31 @@ grim tag --id a1b2c3d "Credential Access" "TA0006"
 
 ## Synthesize a `.cast` Recording
 
-Export a range of commands as an [Asciinema v2](https://docs.asciinema.org/manual/asciicast/v2/) file from the CLI:
+Export one or more cherry-picked commands as an [Asciinema v2](https://docs.asciinema.org/manual/asciicast/v2/) file:
 
 ```bash
-grim cast <first-id> <last-id>
+grim cast <id> [id...]
 ```
 
-Both IDs must belong to the same pane session, and `first-id` must precede `last-id` in sequence order. The output path defaults to `<cast.dir>/grimoire-<timestamp>.cast`.
+Rules:
+- All IDs must belong to the same pane session.
+- IDs must be supplied in chronological (ascending seq) order.
+- Commands between the selected IDs are skipped — non-contiguous picks are fine.
 
-Override the output path for a one-off export:
+The output path defaults to `<cast.dir>/grimoire-<timestamp>.cast`.
 
 ```bash
-grim cast abc0001 abc0025 --out ~/recordings/recon.cast
+# Single command
+grim cast abc0001
+
+# Sequential range
+grim cast abc0001 abc0025
+
+# Cherry-pick specific commands (skipping ones in between)
+grim cast abc0001 abc0005 abc0012
+
+# Explicit output path
+grim cast abc0001 abc0012 --out ~/recordings/recon.cast
 ```
 
-Single-command exports are also supported from the Web UI **Command Detail** panel — click **Export .cast** to write the file to `cast.dir` and see the path in a toast notification.
+Single-command and multi-command exports are also available from the Web UI **Command Detail** panel — click **Export .cast** to write the file to `cast.dir` and see the path in a toast notification.
