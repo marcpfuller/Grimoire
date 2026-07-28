@@ -118,6 +118,13 @@ func runShell(cmd *cobra.Command, _ []string) error {
 	}
 	defer hookCleanup()
 
+	// Pass the resolved token path to the child shell so hooks read from the
+	// same location as the daemon, regardless of the auth.token_path config.
+	// The path is not sensitive — only the 0600 token file itself is.
+	if resolvedPath, pathErr := auth.ResolvePath(viper.GetString("auth.token_path")); pathErr == nil {
+		extraEnv = append(extraEnv, "GRIMOIRE_TOKEN_PATH="+resolvedPath)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

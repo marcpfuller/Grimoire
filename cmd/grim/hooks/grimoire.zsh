@@ -33,9 +33,11 @@ fi
 # Load the bearer token from the token file. Reading from the file (rather
 # than an exported env var) means child processes spawned inside the session
 # never inherit the token — only this shell process has it.
+# GRIMOIRE_TOKEN_PATH is set by `grim shell` from auth.token_path in config.yaml.
 _grimoire_tok=""
-if [[ -r "${HOME}/.grim/token" ]]; then
-    _grimoire_tok=$(tr -d '[:space:]' < "${HOME}/.grim/token" 2>/dev/null)
+_grimoire_token_path="${GRIMOIRE_TOKEN_PATH:-${HOME}/.grim/token}"
+if [[ -r "${_grimoire_token_path}" ]]; then
+    _grimoire_tok=$(tr -d '[:space:]' < "${_grimoire_token_path}" 2>/dev/null)
 fi
 
 # Internal state — do not set these manually.
