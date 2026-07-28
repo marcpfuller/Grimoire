@@ -29,6 +29,7 @@ import (
 
 	"github.com/marcpfuller/grimoire/internal/cast"
 	"github.com/marcpfuller/grimoire/internal/db"
+	"github.com/marcpfuller/grimoire/internal/scrub"
 	"github.com/marcpfuller/grimoire/internal/util"
 )
 
@@ -501,8 +502,9 @@ func (s *Server) handleGetTags(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleGetOutput handles GET /api/commands/{id}/output.
-// Returns raw PTY bytes concatenated from output_chunks as text/plain.
-// ANSI stripping is deferred pending a shared scrub implementation.
+// Returns output_chunks concatenated, stripped of control sequences, as text/plain.
+// SGR sequences (colours, bold, underline) are preserved; cursor movement, screen
+// erase, OSC, and similar sequences are removed by scrub.Strip.
 func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 	shortID := r.PathValue("id")
 	if shortID == "" {
@@ -526,10 +528,13 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	var raw []byte
 	for _, chunk := range chunks {
-		_, _ = w.Write(chunk.Data)
+		raw = append(raw, chunk.Data...)
 	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = fmt.Fprint(w, scrub.Strip(raw))
 }
 
 // writableConfig defines the Viper groups and keys accessible via the config API.
