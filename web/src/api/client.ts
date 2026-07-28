@@ -3,7 +3,7 @@ import type { MetadataResponse, MetadataUpdateRequest } from './generated'
 
 /** Returns the bearer token injected by the daemon into index.html, or an
  *  empty string when running outside a live daemon (e.g. unit tests). */
-function getToken(): string {
+export function getToken(): string {
     const tok = (window as unknown as Record<string, unknown>).__GRIMOIRE_TOKEN__
     return typeof tok === 'string' ? tok : ''
 }

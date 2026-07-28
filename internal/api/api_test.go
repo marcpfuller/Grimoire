@@ -24,7 +24,7 @@ import (
 
 func newServer(t *testing.T, store *dbmocks.MockStore, maxRetries int) *api.Server {
 	t.Helper()
-	return api.New(store, maxRetries, nil)
+	return api.New(store, maxRetries, nil, nil)
 }
 
 func doRequest(t *testing.T, srv *api.Server, method, target string, body any) *httptest.ResponseRecorder {

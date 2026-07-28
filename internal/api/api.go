@@ -29,6 +29,7 @@ import (
 
 	"github.com/marcpfuller/grimoire/internal/cast"
 	"github.com/marcpfuller/grimoire/internal/db"
+	"github.com/marcpfuller/grimoire/internal/events"
 	"github.com/marcpfuller/grimoire/internal/scrub"
 	"github.com/marcpfuller/grimoire/internal/util"
 )
@@ -37,15 +38,25 @@ import (
 type Server struct {
 	store             db.Store
 	maxShortIDRetries int
+	broker            *events.Broker
 	logger            *slog.Logger
 }
 
-// New creates a Server. logger may be nil — all log calls become no-ops.
-func New(store db.Store, maxShortIDRetries int, logger *slog.Logger) *Server {
+// New creates a Server. broker and logger may be nil — broadcasts and log
+// calls become no-ops when their respective fields are nil.
+func New(store db.Store, maxShortIDRetries int, broker *events.Broker, logger *slog.Logger) *Server {
 	return &Server{
 		store:             store,
 		maxShortIDRetries: maxShortIDRetries,
+		broker:            broker,
 		logger:            logger,
+	}
+}
+
+// broadcast sends e to the event broker if one is configured.
+func (s *Server) broadcast(e events.Event) {
+	if s.broker != nil {
+		s.broker.Broadcast(e)
 	}
 }
 
@@ -67,6 +78,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleUpdateConfig)
 	mux.HandleFunc("POST /api/cast", s.handleExportCast)
+	mux.HandleFunc("GET /api/events", s.handleEvents)
 	return mux
 }
 
@@ -190,6 +202,10 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to register pane")
 		return
 	}
+	s.broadcast(events.Event{
+		Type: "session_registered",
+		Data: map[string]any{"pane_id": req.PaneID, "project_id": req.ProjectID},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -225,6 +241,10 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, executeResponse{CommandID: cmd.ID, ShortID: cmd.ShortID})
+	s.broadcast(events.Event{
+		Type: "command_started",
+		Data: map[string]any{"command_id": cmd.ID, "short_id": cmd.ShortID, "pane_id": req.PaneID},
+	})
 }
 
 // handlePrecmd handles POST /api/precmd.
@@ -251,8 +271,11 @@ func (s *Server) handlePrecmd(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to finalize command")
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
+	s.broadcast(events.Event{
+		Type: "command_finished",
+		Data: map[string]any{"short_id": req.ShortID, "pane_id": req.PaneID, "exit_code": req.ExitCode},
+	})
 }
 
 // handleTag handles POST /api/tag.
@@ -312,8 +335,11 @@ func (s *Server) handleDeregister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to deregister pane")
 		return
 	}
-
 	w.WriteHeader(http.StatusNoContent)
+	s.broadcast(events.Event{
+		Type: "session_deregistered",
+		Data: map[string]any{"pane_id": req.PaneID},
+	})
 }
 
 func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
@@ -677,4 +703,63 @@ func (s *Server) logWarn(msg string, args ...any) {
 // Used by `grim shell` to detect daemon outages during an active session.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleEvents streams server-sent events to the caller over a long-lived
+// HTTP connection. Each event has an "event:" type line and a "data:" JSON
+// payload. A ": ping" comment is sent every 25 seconds to prevent proxies
+// and load balancers from closing idle connections.
+//
+// The browser EventSource API cannot send custom request headers, so the
+// auth middleware (auth.Middleware) also accepts the bearer token via the
+// "?token=" query parameter for this endpoint only.
+//
+// Event types: command_started, command_finished, session_registered,
+// session_deregistered.
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming not supported by this server")
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no") // disable nginx proxy buffering
+
+	if s.broker == nil {
+		// No broker configured — write a single comment and return.
+		fmt.Fprintf(w, ": events not available\n\n") //nolint:errcheck
+		flusher.Flush()
+		return
+	}
+
+	ch := s.broker.Subscribe()
+	defer s.broker.Unsubscribe(ch)
+
+	// 25-second keepalive — below the 30-second idle timeout used by most
+	// reverse proxies. The ": ping" comment is valid SSE and ignored by clients.
+	ticker := time.NewTicker(25 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			fmt.Fprintf(w, ": ping\n\n") //nolint:errcheck
+			flusher.Flush()
+		case e, ok := <-ch:
+			if !ok {
+				return
+			}
+			data, err := json.Marshal(e.Data)
+			if err != nil {
+				continue
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", e.Type, data) //nolint:errcheck
+			flusher.Flush()
+		}
+	}
 }
