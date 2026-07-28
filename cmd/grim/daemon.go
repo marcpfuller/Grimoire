@@ -21,6 +21,7 @@ import (
 	"github.com/marcpfuller/grimoire/internal/api"
 	"github.com/marcpfuller/grimoire/internal/auth"
 	"github.com/marcpfuller/grimoire/internal/db"
+	"github.com/marcpfuller/grimoire/internal/events"
 	"github.com/marcpfuller/grimoire/internal/ghostwriter"
 	"github.com/marcpfuller/grimoire/internal/logger"
 	grimsync "github.com/marcpfuller/grimoire/internal/sync"
@@ -80,7 +81,8 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	}
 
 	// --- HTTP API server + embedded UI ---
-	srv := api.New(store, viper.GetInt("api.max_short_id_retries"), log)
+	broker := events.New()
+	srv := api.New(store, viper.GetInt("api.max_short_id_retries"), broker, log)
 
 	uiDist, err := fs.Sub(web.Dist, "dist")
 	if err != nil {

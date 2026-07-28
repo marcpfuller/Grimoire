@@ -119,6 +119,15 @@ func Middleware(token string) func(http.Handler) http.Handler {
 
 			const prefix = "Bearer "
 			authHeader := r.Header.Get("Authorization")
+			// EventSource (used for SSE) cannot set custom headers, so we
+			// also accept the token via the "token" query parameter as a
+			// fallback. The token is only in the URL for the long-lived SSE
+			// connection; it is not logged by the daemon itself.
+			if !strings.HasPrefix(authHeader, prefix) {
+				if tok := r.URL.Query().Get("token"); tok != "" {
+					authHeader = prefix + tok
+				}
+			}
 			if !strings.HasPrefix(authHeader, prefix) {
 				w.Header().Set("WWW-Authenticate", `Bearer realm="grimoire"`)
 				w.Header().Set("Content-Type", "application/json")
