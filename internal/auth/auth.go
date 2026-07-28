@@ -23,6 +23,17 @@ func tokenPath() (string, error) {
 	return filepath.Join(home, ".grim", "token"), nil
 }
 
+// ResolvePath returns path if non-empty, otherwise returns the default token
+// path (~/.grim/token). Useful when the caller needs the concrete filesystem
+// path without loading the token itself — for example, to pass it to a child
+// process via an environment variable.
+func ResolvePath(path string) (string, error) {
+	if path != "" {
+		return path, nil
+	}
+	return tokenPath()
+}
+
 // LoadOrCreate reads the token from path. If the file does not exist or is
 // empty, a new 32-byte (64 hex char) cryptographically random token is
 // generated, written with mode 0600, and returned.
