@@ -242,9 +242,10 @@ func TestReadLoop(t *testing.T) {
 		assert.Equal(t, []byte("command output bytes"), stored)
 	})
 
-	t.Run("activate_marker_stores_prompt_and_output_under_new_id", func(t *testing.T) {
-		// Activate marker in idle state: before bytes (same-buffer prompt)
-		// + any prior promptBuf bytes stored as first chunk under new ID.
+	t.Run("activate_marker_stores_output_only_idle_before_bytes_passthrough", func(t *testing.T) {
+		// Activate marker in idle state: bytes before are written to out but
+		// NOT stored (prompt context comes from the hook via POST /api/execute).
+		// Bytes after the marker are stored under the new commandID.
 		ms := &mockStore{}
 		var out bytes.Buffer
 		sess := &Session{store: ms, out: &out}
@@ -254,63 +255,28 @@ func TestReadLoop(t *testing.T) {
 		sess.readLoop(context.Background(), bytes.NewReader(payload))
 
 		assert.Equal(t, "user@host:~$ ls\r\nls output", out.String(), "marker bytes must be stripped")
-		require.Len(t, ms.chunks, 2, "prompt chunk + output chunk")
+		require.Len(t, ms.chunks, 1, "only output chunk, no prompt chunk")
 		assert.Equal(t, int64(42), ms.chunks[0].CommandID)
-		assert.Equal(t, []byte("user@host:~$ ls\r\n"), ms.chunks[0].Data)
-		assert.Equal(t, []byte("ls output"), ms.chunks[1].Data)
+		assert.Equal(t, []byte("ls output"), ms.chunks[0].Data)
 		cmdID, _, _ := sess.state.snapshot()
 		assert.Equal(t, int64(42), cmdID)
 	})
 
-	t.Run("prompt_accumulated_across_multiple_reads", func(t *testing.T) {
-		// Real-world case: prompt bytes arrive in separate reads before the
-		// activate marker. All idle-state bytes must be concatenated and stored
-		// as the first chunk.
-		ms := &mockStore{}
-		var out bytes.Buffer
-		sess := &Session{store: ms, out: &out}
-
-		startMs := time.Now().UnixMilli()
-		marker := buildActivateMarker(42, startMs, "abc1234")
-
-		ctx := context.Background()
-		sess.processChunk(ctx, []byte("user@host:~$ "))               // read 1: partial prompt (idle)
-		sess.processChunk(ctx, []byte("cat README.md\r\n"))           // read 2: echoed command (idle)
-		sess.processChunk(ctx, append(marker, []byte("# README")...)) // read 3: activate + output
-
-		assert.Equal(t, "user@host:~$ cat README.md\r\n# README", out.String())
-		require.Len(t, ms.chunks, 2, "prompt chunk + output chunk")
-		assert.Equal(t, int64(42), ms.chunks[0].CommandID)
-		assert.Equal(t, []byte("user@host:~$ cat README.md\r\n"), ms.chunks[0].Data)
-		assert.Equal(t, []byte("# README"), ms.chunks[1].Data)
-	})
-
-	t.Run("deactivate_resets_prompt_accumulation", func(t *testing.T) {
-		// Stale idle bytes accumulated before a deactivate must be discarded;
-		// only bytes after the deactivate (next prompt) should appear in the
-		// following command's first chunk.
+	t.Run("idle_bytes_are_not_stored", func(t *testing.T) {
+		// Bytes arriving in idle state (between D and C) are passed through to
+		// out but never stored — there is no promptBuf accumulation.
 		ms := &mockStore{}
 		var out bytes.Buffer
 		sess := &Session{store: ms, out: &out}
 
 		ctx := context.Background()
-		sess.processChunk(ctx, []byte("stale bytes"))
+		sess.processChunk(ctx, []byte("ps1 text here"))
+		sess.processChunk(ctx, []byte("more idle bytes"))
 
-		// Deactivate clears promptBuf; "new prompt start" seeds the fresh one.
-		deactPayload := append(append([]byte("tail"), deactivateMarker...), []byte("new prompt start")...)
-		sess.processChunk(ctx, deactPayload)
-
-		// Next idle read adds more prompt.
-		sess.processChunk(ctx, []byte(" rest\r\n"))
-
-		startMs := time.Now().UnixMilli()
-		marker := buildActivateMarker(99, startMs, "new0099")
-		sess.processChunk(ctx, append(marker, []byte("output")...))
-
-		require.Len(t, ms.chunks, 2)
-		assert.Equal(t, []byte("new prompt start rest\r\n"), ms.chunks[0].Data, "stale bytes must not appear")
-		assert.Equal(t, []byte("output"), ms.chunks[1].Data)
+		assert.Equal(t, "ps1 text heremore idle bytes", out.String())
+		assert.Empty(t, ms.chunks)
 	})
+
 
 	t.Run("activate_marker_no_prompt_bytes_stores_output_only", func(t *testing.T) {
 		// No idle bytes before the activate: only post-marker output is stored.
@@ -384,5 +350,52 @@ func TestReadLoop(t *testing.T) {
 
 		assert.Equal(t, "beforeafter", out.String())
 		assert.Empty(t, ms.chunks)
+	})
+
+	t.Run("deactivate_then_activate_in_same_buffer", func(t *testing.T) {
+		// D and C arrive in the same PTY read (no idle gap between commands).
+		// Both markers must be processed correctly by the loop.
+		ms := &mockStore{}
+		var out bytes.Buffer
+		sess := &Session{store: ms, out: &out}
+		sess.state.activate(5, time.Now().UnixMilli(), "old0005")
+
+		newStart := time.Now().UnixMilli()
+		newMarker := buildActivateMarker(99, newStart, "new0099")
+
+		ctx := context.Background()
+		// [output][D][idle text][C][new output] — all in one buffer
+		payload := make([]byte, 0)
+		payload = append(payload, []byte("old output")...)
+		payload = append(payload, deactivateMarker...)
+		payload = append(payload, []byte("ps1 text")...) // idle bytes, not stored
+		payload = append(payload, newMarker...)
+		payload = append(payload, []byte("new output")...)
+		sess.processChunk(ctx, payload)
+
+		assert.Equal(t, "old outputps1 textnew output", out.String())
+		require.Len(t, ms.chunks, 2)
+		assert.Equal(t, int64(5), ms.chunks[0].CommandID)
+		assert.Equal(t, []byte("old output"), ms.chunks[0].Data)
+		assert.Equal(t, int64(99), ms.chunks[1].CommandID)
+		assert.Equal(t, []byte("new output"), ms.chunks[1].Data)
+	})
+
+	t.Run("post_deactivate_idle_bytes_not_stored", func(t *testing.T) {
+		// After D, bytes arriving before the next C are passthrough only —
+		// no promptBuf accumulation since that concept no longer exists.
+		ms := &mockStore{}
+		var out bytes.Buffer
+		sess := &Session{store: ms, out: &out}
+		sess.state.activate(3, time.Now().UnixMilli(), "fin0003")
+
+		ctx := context.Background()
+		sess.processChunk(ctx, append(deactivateMarker, []byte("post-D noise")...))
+		sess.processChunk(ctx, []byte("more idle"))
+
+		assert.Equal(t, "post-D noisemore idle", out.String())
+		assert.Empty(t, ms.chunks)
+		cmdID, _, _ := sess.state.snapshot()
+		assert.Zero(t, cmdID)
 	})
 }
