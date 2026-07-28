@@ -57,7 +57,19 @@ func postTag(addr, shortID, label string) error {
 		return fmt.Errorf("tag: marshal request: %w", err)
 	}
 
-	resp, err := http.Post(addr, "application/json", bytes.NewReader(body)) //nolint:gosec // G107: addr is localhost from config, not user input
+	tok, err := daemonToken()
+	if err != nil {
+		return fmt.Errorf("tag: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, addr, bytes.NewReader(body)) //nolint:gosec // G107: addr is localhost from config
+	if err != nil {
+		return fmt.Errorf("tag: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
+
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("tag: daemon unreachable: %w", err)
 	}
