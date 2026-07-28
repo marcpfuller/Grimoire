@@ -242,27 +242,89 @@ func TestReadLoop(t *testing.T) {
 		assert.Equal(t, []byte("command output bytes"), stored)
 	})
 
-	t.Run("activate_marker_activates_and_stores_after", func(t *testing.T) {
-		// Activate marker: bytes before → passthrough only; bytes after → out AND stored.
-		// Marker bytes themselves must NOT appear in out.
+	t.Run("activate_marker_stores_prompt_and_output_under_new_id", func(t *testing.T) {
+		// Activate marker in idle state: before bytes (same-buffer prompt)
+		// + any prior promptBuf bytes stored as first chunk under new ID.
 		ms := &mockStore{}
 		var out bytes.Buffer
 		sess := &Session{store: ms, out: &out}
 
 		marker := buildActivateMarker(42, time.Now().UnixMilli(), "abc1234")
-		payload := append(append([]byte("prompt"), marker...), []byte("ls output")...)
+		payload := append(append([]byte("user@host:~$ ls\r\n"), marker...), []byte("ls output")...)
 		sess.readLoop(context.Background(), bytes.NewReader(payload))
 
-		assert.Equal(t, "promptls output", out.String(), "marker bytes must be stripped")
-		require.NotEmpty(t, ms.chunks, "bytes after activate marker must be stored")
-		var stored []byte
-		for _, c := range ms.chunks {
-			stored = append(stored, c.Data...)
-		}
-		assert.Equal(t, []byte("ls output"), stored)
-		// State must be active after the marker.
+		assert.Equal(t, "user@host:~$ ls\r\nls output", out.String(), "marker bytes must be stripped")
+		require.Len(t, ms.chunks, 2, "prompt chunk + output chunk")
+		assert.Equal(t, int64(42), ms.chunks[0].CommandID)
+		assert.Equal(t, []byte("user@host:~$ ls\r\n"), ms.chunks[0].Data)
+		assert.Equal(t, []byte("ls output"), ms.chunks[1].Data)
 		cmdID, _, _ := sess.state.snapshot()
 		assert.Equal(t, int64(42), cmdID)
+	})
+
+	t.Run("prompt_accumulated_across_multiple_reads", func(t *testing.T) {
+		// Real-world case: prompt bytes arrive in separate reads before the
+		// activate marker. All idle-state bytes must be concatenated and stored
+		// as the first chunk.
+		ms := &mockStore{}
+		var out bytes.Buffer
+		sess := &Session{store: ms, out: &out}
+
+		startMs := time.Now().UnixMilli()
+		marker := buildActivateMarker(42, startMs, "abc1234")
+
+		ctx := context.Background()
+		sess.processChunk(ctx, []byte("user@host:~$ "))               // read 1: partial prompt (idle)
+		sess.processChunk(ctx, []byte("cat README.md\r\n"))           // read 2: echoed command (idle)
+		sess.processChunk(ctx, append(marker, []byte("# README")...)) // read 3: activate + output
+
+		assert.Equal(t, "user@host:~$ cat README.md\r\n# README", out.String())
+		require.Len(t, ms.chunks, 2, "prompt chunk + output chunk")
+		assert.Equal(t, int64(42), ms.chunks[0].CommandID)
+		assert.Equal(t, []byte("user@host:~$ cat README.md\r\n"), ms.chunks[0].Data)
+		assert.Equal(t, []byte("# README"), ms.chunks[1].Data)
+	})
+
+	t.Run("deactivate_resets_prompt_accumulation", func(t *testing.T) {
+		// Stale idle bytes accumulated before a deactivate must be discarded;
+		// only bytes after the deactivate (next prompt) should appear in the
+		// following command's first chunk.
+		ms := &mockStore{}
+		var out bytes.Buffer
+		sess := &Session{store: ms, out: &out}
+
+		ctx := context.Background()
+		sess.processChunk(ctx, []byte("stale bytes"))
+
+		// Deactivate clears promptBuf; "new prompt start" seeds the fresh one.
+		deactPayload := append(append([]byte("tail"), deactivateMarker...), []byte("new prompt start")...)
+		sess.processChunk(ctx, deactPayload)
+
+		// Next idle read adds more prompt.
+		sess.processChunk(ctx, []byte(" rest\r\n"))
+
+		startMs := time.Now().UnixMilli()
+		marker := buildActivateMarker(99, startMs, "new0099")
+		sess.processChunk(ctx, append(marker, []byte("output")...))
+
+		require.Len(t, ms.chunks, 2)
+		assert.Equal(t, []byte("new prompt start rest\r\n"), ms.chunks[0].Data, "stale bytes must not appear")
+		assert.Equal(t, []byte("output"), ms.chunks[1].Data)
+	})
+
+	t.Run("activate_marker_no_prompt_bytes_stores_output_only", func(t *testing.T) {
+		// No idle bytes before the activate: only post-marker output is stored.
+		ms := &mockStore{}
+		var out bytes.Buffer
+		sess := &Session{store: ms, out: &out}
+
+		marker := buildActivateMarker(42, time.Now().UnixMilli(), "abc1234")
+		payload := append(marker, []byte("output")...)
+		sess.readLoop(context.Background(), bytes.NewReader(payload))
+
+		assert.Equal(t, "output", out.String())
+		require.Len(t, ms.chunks, 1)
+		assert.Equal(t, []byte("output"), ms.chunks[0].Data)
 	})
 
 	t.Run("activate_marker_mid_buffer_while_capturing_stores_before_under_old_id", func(t *testing.T) {
