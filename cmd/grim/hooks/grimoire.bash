@@ -70,6 +70,24 @@ _grimoire_reserve_next_id() {
         | jq -r '.short_id // empty' 2>/dev/null)
 }
 
+# --- Expand the current PS1 to a plain byte string with ANSI color codes ---
+# Strips readline non-printing markers (\[ \]), expands common PS1 sequences
+# (\u \h \H \w \W), and converts \e/\033 to real ESC bytes so the stored
+# prompt in Grimoire faithfully reflects what the user sees in their terminal.
+_grimoire_expand_ps1() {
+    local p="${PS1}"
+    p="${p//\\[/}"                          # remove readline \[ open marker
+    p="${p//\\]/}"                          # remove readline \] close marker
+    p="${p//\\u/$USER}"
+    p="${p//\\h/${HOSTNAME%%.*}}"
+    p="${p//\\H/$HOSTNAME}"
+    p="${p//\\w/${PWD/#$HOME/\~}}"
+    p="${p//\\W/${PWD##*/}}"
+    p="${p//\\$/\\$}"                       # keep literal $ (avoid eval hazard)
+    p="${p//\\e/\\033}"                     # normalise \e to octal for printf %b
+    printf '%b' "$p"
+}
+
 # --- preexec: called via DEBUG trap before each interactive command ---
 # The DEBUG trap fires before every simple command, including those inside
 # PROMPT_COMMAND and this function itself. The re-entrancy guard prevents
@@ -103,7 +121,7 @@ _grimoire_preexec_trap() {
         -X POST "${GRIMOIRE_DAEMON_ADDR}/api/execute" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${_grimoire_tok}" \
-        -d "{\"pane_id\":\"${GRIMOIRE_PANE_ID}\",\"command\":$(printf '%s' "${cmd}" | jq -Rs .),\"started_at\":${started_at}}" \
+        -d "{\"pane_id\":\"${GRIMOIRE_PANE_ID}\",\"command\":$(printf '%s' "${cmd}" | jq -Rs .),\"prompt\":$(_grimoire_expand_ps1 | jq -Rs .),\"started_at\":${started_at}}" \
         2>/dev/null) || return
 
     local command_id short_id

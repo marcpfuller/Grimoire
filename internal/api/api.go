@@ -98,6 +98,7 @@ type registerRequest struct {
 type executeRequest struct {
 	PaneID    string `json:"pane_id"`
 	Command   string `json:"command"`
+	Prompt    string `json:"prompt"`
 	StartedAt *int64 `json:"started_at"`
 }
 
@@ -227,6 +228,7 @@ func (s *Server) handleExecute(w http.ResponseWriter, r *http.Request) {
 	cmd := &db.Command{
 		PaneID:    req.PaneID,
 		Command:   req.Command,
+		Prompt:    req.Prompt,
 		StartedAt: *req.StartedAt,
 	}
 	if err := s.store.CreateCommand(r.Context(), cmd); err != nil {
@@ -555,6 +557,12 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var raw []byte
+	// Prepend the shell prompt and echoed command so the UI shows the full
+	// terminal context. For commands recorded before this field was added,
+	// Prompt is empty and the output chunks are returned as-is.
+	if cmd.Prompt != "" {
+		raw = append(raw, []byte(cmd.Prompt+cmd.Command+"\r\n")...)
+	}
 	for _, chunk := range chunks {
 		raw = append(raw, chunk.Data...)
 	}

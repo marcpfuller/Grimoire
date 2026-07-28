@@ -95,7 +95,7 @@ _grimoire_preexec() {
         -X POST "${GRIMOIRE_DAEMON_ADDR}/api/execute" \
         -H "Content-Type: application/json" \
         -H "Authorization: Bearer ${_grimoire_tok}" \
-        -d "{\"pane_id\":\"${GRIMOIRE_PANE_ID}\",\"command\":$(printf '%s' "${cmd}" | jq -Rs .),\"started_at\":${started_at}}" \
+        -d "{\"pane_id\":\"${GRIMOIRE_PANE_ID}\",\"command\":$(printf '%s' "${cmd}" | jq -Rs .),\"prompt\":$(print -P "${PS1}" 2>/dev/null | jq -Rs .),\"started_at\":${started_at}}" \
         2>/dev/null) || return
 
     local command_id short_id

@@ -154,15 +154,6 @@ type Session struct {
 	out io.Writer
 	// logger is pre-bound with pane_id. nil is safe — log calls are no-ops.
 	logger *slog.Logger
-	// promptBuf accumulates PTY bytes received while the capture state is idle
-	// (i.e. between a deactivate and the next activate). These bytes are the
-	// shell prompt and echoed command line. They arrive in separate buffer reads
-	// from the activate marker, so they cannot be captured via the in-buffer
-	// "before" slice. When an activate marker is processed, promptBuf is
-	// prepended to the first stored chunk so the UI shows the full shell
-	// context (user@host:~/dir$ command) above the output. Cleared on every
-	// deactivate and after each activate.
-	promptBuf []byte
 }
 
 // SessionConfig holds all configuration for a Session.
@@ -280,84 +271,79 @@ func (s *Session) readLoop(ctx context.Context, r io.Reader) {
 // and current capture state:
 //
 //   - Deactivate marker (\x1b]133;D\x1b\): bytes before are stored if capturing,
-//     then captureState is cleared. Bytes after go to passthrough.
+//     then captureState is cleared. promptBuf is reset. Bytes after continue
+//     processing (they may contain the A marker in the same read).
+//   - Prompt-start marker (\x1b]133;A\x1b\): resets promptBuf (discards bytes
+//     accumulated since D). Bytes after are written to out and accumulated into
+//     the fresh promptBuf — these are the PS1 text. Bytes after continue
+//     processing (they may contain an activate C marker in the same read).
 //   - Activate marker (\x1b]133;C;id=N;...\x1b\): bytes before are passthrough
 //     (or stored if unexpectedly still capturing), captureState is set from the
 //     embedded params, bytes after are stored under the new commandID.
+//   - No marker: bytes are written to out; if capturing, also stored in DB;
+//     if idle and promptCapturing, accumulated in promptBuf.
+// processChunk routes a single PTY read buffer based on OSC marker content
+// and current capture state:
+//
+//   - Deactivate marker (\x1b]133;D\x1b\): bytes before are stored if capturing,
+//     then captureState is cleared. Bytes after continue processing (same buffer).
+//   - Activate marker (\x1b]133;C;id=N;...\x1b\): prompt+command context is
+//     provided by the shell hook via POST /api/execute, so any bytes before the
+//     marker are written to out but not stored. captureState is set from the
+//     embedded params, bytes after are stored under the new commandID.
 //   - No marker: bytes are written to out; if capturing, also stored in DB.
 //
-// Only the first marker in a buffer is processed. A second marker in the same
-// read passes through as raw bytes — this cannot occur in normal shell flow
-// (precmd always fires between commands) but is documented here for clarity.
+// The inner loop ensures that a D followed by C in the same PTY read (e.g. back-
+// to-back commands with no idle gap) is handled correctly.
 func (s *Session) processChunk(ctx context.Context, chunk []byte) {
-	// --- Deactivate marker ---
-	if dIdx := bytes.Index(chunk, deactivateMarker); dIdx >= 0 {
-		before := chunk[:dIdx]
-		after := chunk[dIdx+len(deactivateMarker):]
-		cmdID, startedAt, shortID := s.state.snapshot()
-		if len(before) > 0 {
-			_, _ = s.out.Write(before)
-			if cmdID != 0 {
-				s.storeChunk(ctx, before, cmdID, startedAt, shortID)
-			}
-		}
-		s.state.deactivate()
-		// Reset the prompt accumulator so the next command starts fresh.
-		s.promptBuf = nil
-		if len(after) > 0 {
-			_, _ = s.out.Write(after)
-			// after bytes are the beginning of the next prompt; accumulate them.
-			s.promptBuf = append(s.promptBuf, after...)
-		}
-		return
-	}
-
-	// --- Activate marker ---
-	if bIdx, aIdx, params, found := findActivateMarker(chunk); found {
-		before := chunk[:bIdx]
-		after := chunk[aIdx:]
-		cmdID, startedAt, shortID := s.state.snapshot()
-		if len(before) > 0 {
-			_, _ = s.out.Write(before)
-		}
-		s.state.activate(params.commandID, params.startedAt, params.shortID)
-		if cmdID != 0 {
-			// Edge case: still capturing a previous command (shouldn't occur
-			// in normal flow where precmd always fires first). Store the tail
-			// under the outgoing ID; discard any stale promptBuf.
+	for len(chunk) > 0 {
+		// --- Deactivate marker ---
+		if dIdx := bytes.Index(chunk, deactivateMarker); dIdx >= 0 {
+			before := chunk[:dIdx]
+			after := chunk[dIdx+len(deactivateMarker):]
+			cmdID, startedAt, shortID := s.state.snapshot()
 			if len(before) > 0 {
-				s.storeChunk(ctx, before, cmdID, startedAt, shortID)
+				_, _ = s.out.Write(before)
+				if cmdID != 0 {
+					s.storeChunk(ctx, before, cmdID, startedAt, shortID)
+				}
 			}
-		} else {
-			// Normal flow: promptBuf holds prompt bytes from prior idle reads;
-			// before holds any prompt bytes that arrived in the same read as
-			// the activate marker. Concatenate and store as the first chunk so
-			// the UI shows the full shell context (user@host:~/dir$ command).
-			promptChunk := make([]byte, len(s.promptBuf)+len(before))
-			copy(promptChunk, s.promptBuf)
-			copy(promptChunk[len(s.promptBuf):], before)
-			if len(promptChunk) > 0 {
-				s.storeChunk(ctx, promptChunk, params.commandID, params.startedAt, params.shortID)
-			}
+			s.state.deactivate()
+			chunk = after
+			continue
 		}
-		s.promptBuf = nil
-		if len(after) > 0 {
-			_, _ = s.out.Write(after)
-			s.storeChunk(ctx, after, params.commandID, params.startedAt, params.shortID)
+
+		// --- Activate marker ---
+		if bIdx, aIdx, params, found := findActivateMarker(chunk); found {
+			before := chunk[:bIdx]
+			after := chunk[aIdx:]
+			cmdID, startedAt, shortID := s.state.snapshot()
+			if len(before) > 0 {
+				_, _ = s.out.Write(before)
+				if cmdID != 0 {
+					// Edge case: still capturing a previous command. Store the
+					// tail under the outgoing ID.
+					s.storeChunk(ctx, before, cmdID, startedAt, shortID)
+				}
+				// Idle-state before bytes are PS1/typed text — the hook already
+				// sent the clean prompt string via POST /api/execute, so we skip
+				// storing these PTY bytes to avoid duplication.
+			}
+			s.state.activate(params.commandID, params.startedAt, params.shortID)
+			if len(after) > 0 {
+				_, _ = s.out.Write(after)
+				s.storeChunk(ctx, after, params.commandID, params.startedAt, params.shortID)
+			}
+			return
+		}
+
+		// --- Normal routing ---
+		cmdID, startedAt, shortID := s.state.snapshot()
+		_, _ = s.out.Write(chunk)
+		if cmdID != 0 {
+			s.storeChunk(ctx, chunk, cmdID, startedAt, shortID)
 		}
 		return
-	}
-
-	// --- Normal routing ---
-	cmdID, startedAt, shortID := s.state.snapshot()
-	_, _ = s.out.Write(chunk)
-	if cmdID != 0 {
-		s.storeChunk(ctx, chunk, cmdID, startedAt, shortID)
-	} else {
-		// Idle state: accumulate bytes into promptBuf so the full prompt and
-		// echoed command line can be prepended to the command's output when
-		// the next activate marker arrives.
-		s.promptBuf = append(s.promptBuf, chunk...)
 	}
 }
 

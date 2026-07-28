@@ -141,6 +141,7 @@ type migration struct {
 //	   DEFAULT 50 matches the Ghostwriter recommended terminal height.
 //	4: add command_metadata table for operator-supplied annotations.
 //	5: drop project_id column from commands (now derived via JOIN on panes).
+//	6: add prompt column to commands for hook-provided PS1 context text.
 var migrations = []migration{
 	{
 		version: 1,
@@ -171,6 +172,10 @@ var migrations = []migration{
 	{
 		version: 5,
 		fn:      dropColumnIfPresent("commands", "project_id"),
+	},
+	{
+		version: 6,
+		fn:      addColumnIfMissing("commands", "prompt", "TEXT NOT NULL DEFAULT ''"),
 	},
 }
 
@@ -474,9 +479,9 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 	}
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO commands (short_id, pane_id, seq, command, started_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		shortID, cmd.PaneID, seq, cmd.Command, cmd.StartedAt,
+		`INSERT INTO commands (short_id, pane_id, seq, command, prompt, started_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		shortID, cmd.PaneID, seq, cmd.Command, cmd.Prompt, cmd.StartedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("db: insert command: %w", err)
@@ -494,12 +499,12 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 	cmd := &Command{}
 	var syncedGW int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command,
+		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command, c.prompt,
 		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.short_id = ?`,
 		shortID,
-	).Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.ProjectID, &cmd.Seq, &cmd.Command,
+	).Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.ProjectID, &cmd.Seq, &cmd.Command, &cmd.Prompt,
 		&cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -513,7 +518,7 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 
 func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command,
+		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command, c.prompt,
 		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.pane_id = ? ORDER BY c.seq`,
@@ -533,7 +538,7 @@ func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cm
 
 func (s *sqliteStore) GetCommandsByPaneSeqRange(ctx context.Context, paneID string, firstSeq, lastSeq int64) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command,
+		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command, c.prompt,
 		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.pane_id = ? AND c.seq >= ? AND c.seq <= ? ORDER BY c.seq`,
@@ -553,7 +558,7 @@ func (s *sqliteStore) GetCommandsByPaneSeqRange(ctx context.Context, paneID stri
 
 func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command,
+		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command, c.prompt,
 		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.synced_gw = 0 AND c.ended_at IS NOT NULL ORDER BY c.id`,
@@ -800,7 +805,7 @@ func scanCommands(rows *sql.Rows) ([]*Command, error) {
 		cmd := &Command{}
 		var syncedGW int64
 		if err := rows.Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.ProjectID, &cmd.Seq,
-			&cmd.Command, &cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW); err != nil {
+			&cmd.Command, &cmd.Prompt, &cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW); err != nil {
 			return nil, err
 		}
 		cmd.SyncedGW = syncedGW != 0

@@ -29,6 +29,7 @@ type Command struct {
 	ProjectID string // Ghostwriter project ID, derived via JOIN on panes at read time
 	Seq       int64  // sequential position within the pane
 	Command   string
+	Prompt    string // shell prompt text sent by the preexec hook (e.g. "user@host:~/dir$ ")
 	StartedAt int64  // Unix ms
 	EndedAt   *int64 // Unix ms; nil until FinalizeCommand is called
 	ExitCode  *int   // shell exit status; nil until FinalizeCommand is called
