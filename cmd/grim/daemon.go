@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -17,6 +19,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/marcpfuller/grimoire/internal/api"
+	"github.com/marcpfuller/grimoire/internal/auth"
 	"github.com/marcpfuller/grimoire/internal/db"
 	"github.com/marcpfuller/grimoire/internal/ghostwriter"
 	"github.com/marcpfuller/grimoire/internal/logger"
@@ -70,6 +73,12 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// --- bearer token ---
+	token, err := auth.LoadOrCreate(viper.GetString("auth.token_path"))
+	if err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+
 	// --- HTTP API server + embedded UI ---
 	srv := api.New(store, viper.GetInt("api.max_short_id_retries"), log)
 
@@ -78,8 +87,8 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 		return fmt.Errorf("ui embed: %w", err)
 	}
 	topMux := http.NewServeMux()
-	topMux.Handle("/api/", srv.Handler())
-	topMux.Handle("/", http.FileServerFS(uiDist))
+	topMux.Handle("/api/", auth.Middleware(token)(srv.Handler()))
+	topMux.Handle("/", uiHandler(uiDist, token))
 
 	httpSrv := &http.Server{
 		Addr:              addr,
@@ -160,6 +169,36 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	syncWg.Wait()
 
 	return nil
+}
+
+// uiHandler serves the embedded frontend. Requests for / and /index.html have
+// the bearer token injected as window.__GRIMOIRE_TOKEN__ so the React app can
+// authenticate its API calls without the user needing to manage credentials.
+// The response is marked Cache-Control: no-store so browsers never cache the
+// HTML page that contains the token. All other paths (JS, CSS, assets) are
+// served by the standard file server and may be cached normally.
+func uiHandler(fsys fs.FS, token string) http.Handler {
+	fileServer := http.FileServerFS(fsys)
+	tokenJSON, _ := json.Marshal(token)
+	script := append(
+		[]byte("<script>window.__GRIMOIRE_TOKEN__="+string(tokenJSON)+"</script>"),
+		[]byte("</head>")...,
+	)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			data, err := fs.ReadFile(fsys, "index.html")
+			if err != nil {
+				http.Error(w, "index.html not found", http.StatusInternalServerError)
+				return
+			}
+			modified := bytes.Replace(data, []byte("</head>"), script, 1)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-store")
+			_, _ = w.Write(modified)
+			return
+		}
+		fileServer.ServeHTTP(w, r)
+	})
 }
 
 // noopPusher is used when Ghostwriter credentials are not configured.

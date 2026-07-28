@@ -63,8 +63,10 @@ func initConfig() error {
 	viper.SetDefault("api.max_short_id_retries", 5)
 	if home, err := os.UserHomeDir(); err == nil {
 		viper.SetDefault("db.path", filepath.Join(home, ".grim", "grimoire.db"))
+		viper.SetDefault("auth.token_path", filepath.Join(home, ".grim", "token"))
 	} else {
 		viper.SetDefault("db.path", "grimoire.db")
+		viper.SetDefault("auth.token_path", "token")
 	}
 	viper.SetDefault("sync.interval_seconds", 30)
 	viper.SetDefault("shell", "")
