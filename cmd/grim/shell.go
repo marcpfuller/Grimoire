@@ -81,7 +81,7 @@ func runShell(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Load the bearer token written by the daemon on first start.
-	token, err := auth.Load()
+	token, err := auth.Load(viper.GetString("auth.token_path"))
 	if err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}

@@ -74,7 +74,7 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	defer cancel()
 
 	// --- bearer token ---
-	token, err := auth.LoadOrCreate()
+	token, err := auth.LoadOrCreate(viper.GetString("auth.token_path"))
 	if err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}

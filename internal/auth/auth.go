@@ -23,19 +23,23 @@ func tokenPath() (string, error) {
 	return filepath.Join(home, ".grim", "token"), nil
 }
 
-// LoadOrCreate reads the token from disk. If the file does not exist or is
+// LoadOrCreate reads the token from path. If the file does not exist or is
 // empty, a new 32-byte (64 hex char) cryptographically random token is
 // generated, written with mode 0600, and returned.
 //
-// The parent directory (~/.grim) is created with mode 0700 if absent.
-func LoadOrCreate() (string, error) {
-	path, err := tokenPath()
-	if err != nil {
-		return "", err
+// The parent directory is created with mode 0700 if absent.
+// If path is empty, the default (~/.grim/token) is used.
+func LoadOrCreate(path string) (string, error) {
+	if path == "" {
+		var err error
+		path, err = tokenPath()
+		if err != nil {
+			return "", err
+		}
 	}
 
 	// Try to read an existing token first.
-	if data, err := os.ReadFile(path); err == nil {
+	if data, err := os.ReadFile(path); err == nil { //nolint:gosec // G304: path comes from config or os.UserHomeDir(), not user input
 		if tok := strings.TrimSpace(string(data)); tok != "" {
 			return tok, nil
 		}
@@ -62,15 +66,20 @@ func LoadOrCreate() (string, error) {
 	return tok, nil
 }
 
-// Load reads the token from disk without generating one. Returns an error if
+// Load reads the token from path without generating one. Returns an error if
 // the file is absent or empty — this typically means the daemon has not been
 // started yet.
-func Load() (string, error) {
-	path, err := tokenPath()
-	if err != nil {
-		return "", err
+//
+// If path is empty, the default (~/.grim/token) is used.
+func Load(path string) (string, error) {
+	if path == "" {
+		var err error
+		path, err = tokenPath()
+		if err != nil {
+			return "", err
+		}
 	}
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path comes from config or os.UserHomeDir(), not user input
 	if err != nil {
 		return "", fmt.Errorf("auth: read token from %s: %w — is the daemon running?", path, err)
 	}

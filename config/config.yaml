@@ -4,6 +4,14 @@ server:
   host: "127.0.0.1"
   port: 7777
 
+auth:
+  # Path to the bearer token file used to authenticate daemon API calls.
+  # The file is created on first `grim daemon start` with mode 0600.
+  # Defaults to ~/.grim/token when empty or unset.
+  # Example override (tmpfs — token disappears on reboot):
+  #   token_path: "/run/user/1000/grim-token"
+  token_path: ""
+
 sync:
   interval_seconds: 30
 
