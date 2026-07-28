@@ -1,8 +1,13 @@
+import { useMemo } from 'react'
+import { ansiToHtml } from '../../utils/ansiToHtml'
+
 export interface TerminalOutputProps {
   output: string
 }
 
 export function TerminalOutput({ output }: TerminalOutputProps) {
+  const html = useMemo(() => ansiToHtml(output), [output])
+
   return (
     <div className="flex-1 flex flex-col border border-vscode-border rounded-sm overflow-hidden bg-[#0d0d0d]">
       <div className="bg-[#181818] border-b border-vscode-border px-3 py-1.5 flex items-center justify-between shrink-0">
@@ -14,9 +19,11 @@ export function TerminalOutput({ output }: TerminalOutputProps) {
           <span className="material-symbols-outlined text-[14px] cursor-pointer hover:text-white" title="Find">search</span>
         </div>
       </div>
-      <div className="p-3 overflow-auto font-code text-[12px] text-[#cccccc] whitespace-pre-wrap leading-relaxed select-text">
-        {output}
-      </div>
+      <div
+        className="p-3 overflow-auto font-code text-[12px] text-[#cccccc] whitespace-pre-wrap leading-relaxed select-text"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
     </div>
   )
 }
+
