@@ -5,10 +5,10 @@ package cast
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/marcpfuller/grimoire/internal/db"
@@ -25,14 +25,15 @@ type Store interface {
 	GetCommandByShortID(ctx context.Context, shortID string) (*db.Command, error)
 	GetOutputChunks(ctx context.Context, commandID int64) ([]*db.OutputChunk, error)
 	GetPane(ctx context.Context, paneID string) (*db.Pane, error)
-	GetCommandsByPaneSeqRange(ctx context.Context, paneID string, firstSeq, lastSeq int64) ([]*db.Command, error)
 }
 
 // Params holds the parameters for a cast synthesis run.
 type Params struct {
-	// FirstShortID and LastShortID identify the inclusive command range.
-	FirstShortID string
-	LastShortID  string
+	// ShortIDs is the ordered list of command short IDs to include in the cast.
+	// IDs may be non-contiguous (commands between them are skipped) but must be
+	// supplied in chronological (ascending seq) order and must all belong to the
+	// same pane session. At least one ID is required.
+	ShortIDs []string
 	// OutDir is the directory used for the default timestamped filename.
 	// Ignored when OutFile is non-empty.
 	OutDir string
@@ -50,43 +51,47 @@ type castHeader struct {
 	Title     string `json:"title,omitempty"`
 }
 
-// Synthesize queries the store for the command range identified by cfg,
-// writes an Asciinema v2 .cast file, and returns the path of the written file.
+// Synthesize resolves cfg.ShortIDs from the store, validates ordering, writes
+// an Asciinema v2 .cast file containing only the selected commands, and returns
+// the path of the written file.
 func Synthesize(ctx context.Context, store Store, cfg Params) (string, error) {
-	// Resolve first and last commands.
-	first, err := store.GetCommandByShortID(ctx, cfg.FirstShortID)
-	if err != nil {
-		return "", fmt.Errorf("cast: resolve first ID %q: %w", cfg.FirstShortID, err)
+	if len(cfg.ShortIDs) == 0 {
+		return "", fmt.Errorf("cast: at least one short ID is required")
 	}
-	last := first
-	if cfg.LastShortID != cfg.FirstShortID {
-		last, err = store.GetCommandByShortID(ctx, cfg.LastShortID)
+
+	// Resolve every requested ID.
+	cmds := make([]*db.Command, len(cfg.ShortIDs))
+	for i, id := range cfg.ShortIDs {
+		cmd, err := store.GetCommandByShortID(ctx, id)
 		if err != nil {
-			return "", fmt.Errorf("cast: resolve last ID %q: %w", cfg.LastShortID, err)
+			return "", fmt.Errorf("cast: resolve ID %q: %w", id, err)
+		}
+		cmds[i] = cmd
+	}
+
+	// All commands must belong to the same pane (terminal dimensions are
+	// per-pane and the timeline must be coherent).
+	paneID := cmds[0].PaneID
+	for _, cmd := range cmds[1:] {
+		if cmd.PaneID != paneID {
+			return "", fmt.Errorf("cast: command %q belongs to pane %q, expected %q — all IDs must be from the same pane", cmd.ShortID, cmd.PaneID, paneID)
 		}
 	}
 
-	// Both commands must belong to the same pane.
-	if first.PaneID != last.PaneID {
-		return "", errors.New("cast: commands belong to different panes")
-	}
-	paneID := first.PaneID
-
-	// Seq ordering must be non-decreasing.
-	if last.Seq < first.Seq {
-		return "", fmt.Errorf("cast: last command seq %d is before first command seq %d", last.Seq, first.Seq)
-	}
+	// Sort commands into chronological order and deduplicate by Seq so that
+	// passing the same ID twice (or two IDs that map to the same command) is
+	// handled gracefully.
+	slices.SortFunc(cmds, func(a, b *db.Command) int {
+		return int(a.Seq - b.Seq)
+	})
+	cmds = slices.CompactFunc(cmds, func(a, b *db.Command) bool {
+		return a.Seq == b.Seq
+	})
 
 	// Fetch terminal dimensions from the pane.
 	pane, err := store.GetPane(ctx, paneID)
 	if err != nil {
 		return "", fmt.Errorf("cast: get pane %q: %w", paneID, err)
-	}
-
-	// Fetch all commands in the range.
-	cmds, err := store.GetCommandsByPaneSeqRange(ctx, paneID, first.Seq, last.Seq)
-	if err != nil {
-		return "", fmt.Errorf("cast: query command range: %w", err)
 	}
 
 	// Determine output file path.
@@ -115,7 +120,7 @@ func Synthesize(ctx context.Context, store Store, cfg Params) (string, error) {
 		Version:   2,
 		Width:     pane.Width,
 		Height:    pane.Height,
-		Timestamp: first.StartedAt / 1000, // ms → s
+		Timestamp: cmds[0].StartedAt / 1000, // ms → s
 	}
 	if err := enc.Encode(hdr); err != nil {
 		return "", fmt.Errorf("cast: write header: %w", err)
@@ -126,7 +131,7 @@ func Synthesize(ctx context.Context, store Store, cfg Params) (string, error) {
 	//   2. One event per output chunk.
 	// Timestamps are expressed as floating-point seconds from the start of the
 	// recording and are compressed so no gap exceeds maxGapMs milliseconds.
-	baseMs := first.StartedAt
+	baseMs := cmds[0].StartedAt
 	curMs := int64(0) // elapsed ms from baseMs, post-compression
 
 	writeEvent := func(absMs int64, data []byte) error {

@@ -80,15 +80,13 @@ func TestSynthesizeHappyPath(t *testing.T) {
 	store.On("GetCommandByShortID", mock.Anything, "abc0001").Return(cmd1, nil).Once()
 	store.On("GetCommandByShortID", mock.Anything, "abc0002").Return(cmd2, nil).Once()
 	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
-	store.On("GetCommandsByPaneSeqRange", mock.Anything, "pane-1", int64(1), int64(2)).Return([]*db.Command{cmd1, cmd2}, nil).Once()
 	store.On("GetOutputChunks", mock.Anything, int64(1)).Return(chunks1, nil).Once()
 	store.On("GetOutputChunks", mock.Anything, int64(2)).Return(chunks2, nil).Once()
 
 	dir := t.TempDir()
 	cfg := cast.Params{
-		FirstShortID: "abc0001",
-		LastShortID:  "abc0002",
-		OutFile:      filepath.Join(dir, "test.cast"),
+		ShortIDs: []string{"abc0001", "abc0002"},
+		OutFile:  filepath.Join(dir, "test.cast"),
 	}
 
 	path, err := cast.Synthesize(context.Background(), store, cfg)
@@ -114,6 +112,53 @@ func TestSynthesizeHappyPath(t *testing.T) {
 	}
 }
 
+func TestSynthesizeSingleID(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+
+	cmd := &db.Command{ID: 1, ShortID: "sin0001", PaneID: "pane-1", Seq: 1, Command: "echo hi", StartedAt: 1000}
+	pane := &db.Pane{ID: "pane-1", Width: 220, Height: 50}
+
+	store.On("GetCommandByShortID", mock.Anything, "sin0001").Return(cmd, nil).Once()
+	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
+	store.On("GetOutputChunks", mock.Anything, int64(1)).Return([]*db.OutputChunk{{CommandID: 1, Data: []byte("hi\n"), OffsetMs: 50}}, nil).Once()
+
+	path, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"sin0001"},
+		OutFile:  filepath.Join(t.TempDir(), "single.cast"),
+	})
+	require.NoError(t, err)
+
+	_, events := parseCast(t, path)
+	require.Len(t, events, 2) // command line + 1 chunk
+	assert.Contains(t, events[0].Data, "echo hi")
+}
+
+func TestSynthesizeNonContiguousIDs(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+
+	// seq 1 and seq 5 — seq 2,3,4 are skipped
+	cmd1 := &db.Command{ID: 1, ShortID: "nc0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
+	cmd5 := &db.Command{ID: 5, ShortID: "nc0005", PaneID: "pane-1", Seq: 5, Command: "pwd", StartedAt: 9000}
+	pane := &db.Pane{ID: "pane-1", Width: 220, Height: 50}
+
+	store.On("GetCommandByShortID", mock.Anything, "nc0001").Return(cmd1, nil).Once()
+	store.On("GetCommandByShortID", mock.Anything, "nc0005").Return(cmd5, nil).Once()
+	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
+	store.On("GetOutputChunks", mock.Anything, int64(1)).Return(nil, nil).Once()
+	store.On("GetOutputChunks", mock.Anything, int64(5)).Return(nil, nil).Once()
+
+	path, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"nc0001", "nc0005"},
+		OutFile:  filepath.Join(t.TempDir(), "noncontig.cast"),
+	})
+	require.NoError(t, err)
+
+	_, events := parseCast(t, path)
+	require.Len(t, events, 2) // one bare command line per command, no chunks
+	assert.Contains(t, events[0].Data, "ls")
+	assert.Contains(t, events[1].Data, "pwd")
+}
+
 func TestSynthesizeCrossPane(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 
@@ -123,15 +168,12 @@ func TestSynthesizeCrossPane(t *testing.T) {
 	store.On("GetCommandByShortID", mock.Anything, "aaa0001").Return(cmd1, nil).Once()
 	store.On("GetCommandByShortID", mock.Anything, "bbb0001").Return(cmd2, nil).Once()
 
-	cfg := cast.Params{
-		FirstShortID: "aaa0001",
-		LastShortID:  "bbb0001",
-		OutFile:      filepath.Join(t.TempDir(), "cross.cast"),
-	}
-
-	_, err := cast.Synthesize(context.Background(), store, cfg)
+	_, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"aaa0001", "bbb0001"},
+		OutFile:  filepath.Join(t.TempDir(), "cross.cast"),
+	})
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "different panes")
+	assert.Contains(t, err.Error(), "same pane")
 }
 
 func TestSynthesizeNoOutputChunks(t *testing.T) {
@@ -142,16 +184,12 @@ func TestSynthesizeNoOutputChunks(t *testing.T) {
 
 	store.On("GetCommandByShortID", mock.Anything, "noc0001").Return(cmd, nil).Once()
 	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
-	store.On("GetCommandsByPaneSeqRange", mock.Anything, "pane-1", int64(1), int64(1)).Return([]*db.Command{cmd}, nil).Once()
 	store.On("GetOutputChunks", mock.Anything, int64(1)).Return(nil, nil).Once()
 
-	cfg := cast.Params{
-		FirstShortID: "noc0001",
-		LastShortID:  "noc0001",
-		OutFile:      filepath.Join(t.TempDir(), "nochunks.cast"),
-	}
-
-	path, err := cast.Synthesize(context.Background(), store, cfg)
+	path, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"noc0001"},
+		OutFile:  filepath.Join(t.TempDir(), "nochunks.cast"),
+	})
 	require.NoError(t, err)
 
 	_, events := parseCast(t, path)
@@ -169,17 +207,13 @@ func TestSynthesizeGapCompression(t *testing.T) {
 	store.On("GetCommandByShortID", mock.Anything, "gap0001").Return(cmd1, nil).Once()
 	store.On("GetCommandByShortID", mock.Anything, "gap0002").Return(cmd2, nil).Once()
 	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
-	store.On("GetCommandsByPaneSeqRange", mock.Anything, "pane-1", int64(1), int64(2)).Return([]*db.Command{cmd1, cmd2}, nil).Once()
 	store.On("GetOutputChunks", mock.Anything, int64(1)).Return([]*db.OutputChunk{{CommandID: 1, Data: []byte("done\n"), OffsetMs: 9900}}, nil).Once()
 	store.On("GetOutputChunks", mock.Anything, int64(2)).Return([]*db.OutputChunk{{CommandID: 2, Data: []byte("file\n"), OffsetMs: 100}}, nil).Once()
 
-	cfg := cast.Params{
-		FirstShortID: "gap0001",
-		LastShortID:  "gap0002",
-		OutFile:      filepath.Join(t.TempDir(), "gap.cast"),
-	}
-
-	path, err := cast.Synthesize(context.Background(), store, cfg)
+	path, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"gap0001", "gap0002"},
+		OutFile:  filepath.Join(t.TempDir(), "gap.cast"),
+	})
 	require.NoError(t, err)
 
 	_, events := parseCast(t, path)
@@ -192,18 +226,40 @@ func TestSynthesizeGapCompression(t *testing.T) {
 	}
 }
 
-func TestSynthesizeFirstIDNotFound(t *testing.T) {
+func TestSynthesizeEmptyShortIDs(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+
+	_, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{},
+		OutFile:  filepath.Join(t.TempDir(), "empty.cast"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "at least one")
+}
+
+func TestSynthesizeIDNotFound(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 
 	store.On("GetCommandByShortID", mock.Anything, "nope0001").Return(nil, db.ErrNotFound).Once()
 
-	cfg := cast.Params{
-		FirstShortID: "nope0001",
-		LastShortID:  "nope0002",
-		OutFile:      filepath.Join(t.TempDir(), "notfound.cast"),
-	}
+	_, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"nope0001"},
+		OutFile:  filepath.Join(t.TempDir(), "notfound.cast"),
+	})
+	require.ErrorIs(t, err, db.ErrNotFound)
+}
 
-	_, err := cast.Synthesize(context.Background(), store, cfg)
+func TestSynthesizeSecondIDNotFound(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+
+	cmd1 := &db.Command{ID: 1, ShortID: "ok0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
+	store.On("GetCommandByShortID", mock.Anything, "ok0001").Return(cmd1, nil).Once()
+	store.On("GetCommandByShortID", mock.Anything, "nope0002").Return(nil, db.ErrNotFound).Once()
+
+	_, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"ok0001", "nope0002"},
+		OutFile:  filepath.Join(t.TempDir(), "notfound.cast"),
+	})
 	require.ErrorIs(t, err, db.ErrNotFound)
 }
 
@@ -212,19 +268,50 @@ func TestSynthesizeReversedIDs(t *testing.T) {
 
 	cmd1 := &db.Command{ID: 1, ShortID: "rev0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
 	cmd2 := &db.Command{ID: 2, ShortID: "rev0002", PaneID: "pane-1", Seq: 2, Command: "pwd", StartedAt: 2000}
+	pane := &db.Pane{ID: "pane-1", Width: 220, Height: 50}
 
+	// IDs supplied in reverse order — daemon must sort them.
 	store.On("GetCommandByShortID", mock.Anything, "rev0002").Return(cmd2, nil).Once()
 	store.On("GetCommandByShortID", mock.Anything, "rev0001").Return(cmd1, nil).Once()
+	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
+	store.On("GetOutputChunks", mock.Anything, int64(1)).Return(nil, nil).Once()
+	store.On("GetOutputChunks", mock.Anything, int64(2)).Return(nil, nil).Once()
 
-	cfg := cast.Params{
-		FirstShortID: "rev0002", // reversed: higher seq first
-		LastShortID:  "rev0001",
-		OutFile:      filepath.Join(t.TempDir(), "reversed.cast"),
-	}
+	path, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"rev0002", "rev0001"}, // reversed — should be sorted automatically
+		OutFile:  filepath.Join(t.TempDir(), "reversed.cast"),
+	})
+	require.NoError(t, err)
 
-	_, err := cast.Synthesize(context.Background(), store, cfg)
-	require.Error(t, err)
-	require.Contains(t, strings.ToLower(err.Error()), "seq")
+	_, events := parseCast(t, path)
+	require.Len(t, events, 2)
+	// After sorting, ls (seq 1) must appear before pwd (seq 2).
+	assert.Contains(t, events[0].Data, "ls")
+	assert.Contains(t, events[1].Data, "pwd")
+	// Timestamps must be non-decreasing.
+	assert.GreaterOrEqual(t, events[1].Time, events[0].Time)
+}
+
+func TestSynthesizeDuplicateSeq(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+
+	// Same command ID supplied twice — after dedup only one event should appear.
+	cmd := &db.Command{ID: 1, ShortID: "dup0001", PaneID: "pane-1", Seq: 3, Command: "ls", StartedAt: 1000}
+	pane := &db.Pane{ID: "pane-1", Width: 220, Height: 50}
+
+	store.On("GetCommandByShortID", mock.Anything, "dup0001").Return(cmd, nil).Times(2)
+	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
+	store.On("GetOutputChunks", mock.Anything, int64(1)).Return(nil, nil).Once()
+
+	path, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"dup0001", "dup0001"},
+		OutFile:  filepath.Join(t.TempDir(), "dup.cast"),
+	})
+	require.NoError(t, err)
+
+	_, events := parseCast(t, path)
+	require.Len(t, events, 1, "duplicate should be collapsed to a single event")
+	assert.Contains(t, events[0].Data, "ls")
 }
 
 func TestSynthesizeOutFile(t *testing.T) {
@@ -235,19 +322,15 @@ func TestSynthesizeOutFile(t *testing.T) {
 
 	store.On("GetCommandByShortID", mock.Anything, "out0001").Return(cmd, nil).Once()
 	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
-	store.On("GetCommandsByPaneSeqRange", mock.Anything, "pane-1", int64(1), int64(1)).Return([]*db.Command{cmd}, nil).Once()
 	store.On("GetOutputChunks", mock.Anything, int64(1)).Return([]*db.OutputChunk{{CommandID: 1, Data: []byte("hi\n"), OffsetMs: 50}}, nil).Once()
 
 	dir := t.TempDir()
 	explicit := filepath.Join(dir, "my-session.cast")
 
-	cfg := cast.Params{
-		FirstShortID: "out0001",
-		LastShortID:  "out0001",
-		OutFile:      explicit,
-	}
-
-	path, err := cast.Synthesize(context.Background(), store, cfg)
+	path, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"out0001"},
+		OutFile:  explicit,
+	})
 	require.NoError(t, err)
 	require.Equal(t, explicit, path)
 	_, statErr := os.Stat(explicit)
@@ -262,14 +345,12 @@ func TestSynthesizeDefaultOutFile(t *testing.T) {
 
 	store.On("GetCommandByShortID", mock.Anything, "def0001").Return(cmd, nil).Once()
 	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
-	store.On("GetCommandsByPaneSeqRange", mock.Anything, "pane-1", int64(1), int64(1)).Return([]*db.Command{cmd}, nil).Once()
 	store.On("GetOutputChunks", mock.Anything, int64(1)).Return(nil, nil).Once()
 
 	dir := t.TempDir()
 	cfg := cast.Params{
-		FirstShortID: "def0001",
-		LastShortID:  "def0001",
-		OutDir:       dir,
+		ShortIDs: []string{"def0001"},
+		OutDir:   dir,
 		// OutFile intentionally empty: should use OutDir + timestamped name
 	}
 
@@ -280,81 +361,35 @@ func TestSynthesizeDefaultOutFile(t *testing.T) {
 	_, statErr := os.Stat(path)
 	assert.NoError(t, statErr)
 }
-func TestSynthesizeLastIDNotFound(t *testing.T) {
-        store := dbmocks.NewMockStore(t)
-
-        cmd1 := &db.Command{ID: 1, ShortID: "ok0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
-        store.On("GetCommandByShortID", mock.Anything, "ok0001").Return(cmd1, nil).Once()
-        store.On("GetCommandByShortID", mock.Anything, "nope0002").Return(nil, db.ErrNotFound).Once()
-
-        cfg := cast.Params{
-                FirstShortID: "ok0001",
-                LastShortID:  "nope0002",
-                OutFile:      filepath.Join(t.TempDir(), "notfound.cast"),
-        }
-
-        _, err := cast.Synthesize(context.Background(), store, cfg)
-        require.ErrorIs(t, err, db.ErrNotFound)
-}
 
 func TestSynthesizeGetPaneError(t *testing.T) {
-        store := dbmocks.NewMockStore(t)
+	store := dbmocks.NewMockStore(t)
 
-        cmd := &db.Command{ID: 1, ShortID: "pe0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
-        store.On("GetCommandByShortID", mock.Anything, "pe0001").Return(cmd, nil).Once()
-        store.On("GetPane", mock.Anything, "pane-1").Return(nil, db.ErrNotFound).Once()
+	cmd := &db.Command{ID: 1, ShortID: "pe0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
+	store.On("GetCommandByShortID", mock.Anything, "pe0001").Return(cmd, nil).Once()
+	store.On("GetPane", mock.Anything, "pane-1").Return(nil, db.ErrNotFound).Once()
 
-        cfg := cast.Params{
-                FirstShortID: "pe0001",
-                LastShortID:  "pe0001",
-                OutFile:      filepath.Join(t.TempDir(), "paneerr.cast"),
-        }
-
-        _, err := cast.Synthesize(context.Background(), store, cfg)
-        require.ErrorIs(t, err, db.ErrNotFound)
-}
-
-func TestSynthesizeCommandRangeError(t *testing.T) {
-        store := dbmocks.NewMockStore(t)
-
-        cmd1 := &db.Command{ID: 1, ShortID: "cr0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
-        cmd2 := &db.Command{ID: 2, ShortID: "cr0002", PaneID: "pane-1", Seq: 2, Command: "pwd", StartedAt: 2000}
-        pane := &db.Pane{ID: "pane-1", Width: 220, Height: 50}
-
-        store.On("GetCommandByShortID", mock.Anything, "cr0001").Return(cmd1, nil).Once()
-        store.On("GetCommandByShortID", mock.Anything, "cr0002").Return(cmd2, nil).Once()
-        store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
-        store.On("GetCommandsByPaneSeqRange", mock.Anything, "pane-1", int64(1), int64(2)).Return(nil, db.ErrNotFound).Once()
-
-        cfg := cast.Params{
-                FirstShortID: "cr0001",
-                LastShortID:  "cr0002",
-                OutFile:      filepath.Join(t.TempDir(), "rangeerr.cast"),
-        }
-
-        _, err := cast.Synthesize(context.Background(), store, cfg)
-        require.Error(t, err)
-        require.Contains(t, err.Error(), "command range")
+	_, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"pe0001"},
+		OutFile:  filepath.Join(t.TempDir(), "paneerr.cast"),
+	})
+	require.ErrorIs(t, err, db.ErrNotFound)
 }
 
 func TestSynthesizeGetOutputChunksError(t *testing.T) {
-        store := dbmocks.NewMockStore(t)
+	store := dbmocks.NewMockStore(t)
 
-        cmd := &db.Command{ID: 1, ShortID: "oc0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
-        pane := &db.Pane{ID: "pane-1", Width: 220, Height: 50}
-        dbErr := errors.New("storage failure")
+	cmd := &db.Command{ID: 1, ShortID: "oc0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
+	pane := &db.Pane{ID: "pane-1", Width: 220, Height: 50}
+	dbErr := errors.New("storage failure")
 
-        store.On("GetCommandByShortID", mock.Anything, "oc0001").Return(cmd, nil).Once()
-        store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
-        store.On("GetCommandsByPaneSeqRange", mock.Anything, "pane-1", int64(1), int64(1)).Return([]*db.Command{cmd}, nil).Once()
-        store.On("GetOutputChunks", mock.Anything, int64(1)).Return(nil, dbErr).Once()
+	store.On("GetCommandByShortID", mock.Anything, "oc0001").Return(cmd, nil).Once()
+	store.On("GetPane", mock.Anything, "pane-1").Return(pane, nil).Once()
+	store.On("GetOutputChunks", mock.Anything, int64(1)).Return(nil, dbErr).Once()
 
-        cfg := cast.Params{
-                FirstShortID: "oc0001",
-                LastShortID:  "oc0001",
-                OutFile:      filepath.Join(t.TempDir(), "chunkserr.cast"),
-        }
-
-        _, err := cast.Synthesize(context.Background(), store, cfg)
-        require.ErrorIs(t, err, dbErr)
+	_, err := cast.Synthesize(context.Background(), store, cast.Params{
+		ShortIDs: []string{"oc0001"},
+		OutFile:  filepath.Join(t.TempDir(), "chunkserr.cast"),
+	})
+	require.ErrorIs(t, err, dbErr)
 }

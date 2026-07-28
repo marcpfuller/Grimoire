@@ -124,7 +124,7 @@ type tagRequest struct {
 }
 
 type castRequest struct {
-	ID string `json:"id"`
+	IDs []string `json:"ids"`
 }
 
 type castExportResponse struct {
@@ -628,15 +628,15 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleExportCast handles POST /api/cast.
-// Synthesizes a single-command Asciinema .cast file and returns its path on disk.
+// Synthesizes an Asciinema .cast file from the requested command IDs and returns its path on disk.
 func (s *Server) handleExportCast(w http.ResponseWriter, r *http.Request) {
 	var req castRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if req.ID == "" {
-		writeError(w, http.StatusBadRequest, "id is required")
+	if len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "ids is required")
 		return
 	}
 
@@ -646,16 +646,15 @@ func (s *Server) handleExportCast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	path, err := cast.Synthesize(r.Context(), s.store, cast.Params{
-		FirstShortID: req.ID,
-		LastShortID:  req.ID,
-		OutDir:       outDir,
+		ShortIDs: req.IDs,
+		OutDir:   outDir,
 	})
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "command not found")
 			return
 		}
-		s.logWarn("cast: Synthesize failed", "id", req.ID, "err", err)
+		s.logWarn("cast: Synthesize failed", "ids", req.IDs, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to export cast")
 		return
 	}

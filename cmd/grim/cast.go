@@ -12,17 +12,19 @@ import (
 )
 
 var castCmd = &cobra.Command{
-	Use:   "cast <first-id> <last-id>",
-	Short: "Synthesize an Asciinema v2 .cast file from a command sequence",
-	Long: `Synthesize an Asciinema v2 .cast file from a recorded command sequence.
+	Use:   "cast <id> [id...]",
+	Short: "Synthesize an Asciinema v2 .cast file from selected commands",
+	Long: `Synthesize an Asciinema v2 .cast file from one or more recorded commands.
 
-Both IDs must belong to the same pane session and first-id must precede
-last-id in sequence order.
+All IDs must belong to the same pane session and must be supplied in
+chronological (ascending seq) order. Non-contiguous commands are supported —
+commands between the selected IDs are simply omitted from the recording.
 
 Example:
+  grim cast abc0001
   grim cast abc0001 abc0025
-  grim cast abc0001 abc0025 --out ~/recordings/recon.cast`,
-	Args: cobra.ExactArgs(2),
+  grim cast abc0001 abc0005 abc0012 --out ~/recordings/recon.cast`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: runCast,
 }
 
@@ -50,10 +52,9 @@ func runCast(cmd *cobra.Command, args []string) error {
 	}
 
 	cfg := cast.Params{
-		FirstShortID: args[0],
-		LastShortID:  args[1],
-		OutDir:       outDir,
-		OutFile:      castOutFile,
+		ShortIDs: args,
+		OutDir:   outDir,
+		OutFile:  castOutFile,
 	}
 
 	path, err := cast.Synthesize(cmd.Context(), store, cfg)
