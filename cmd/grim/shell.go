@@ -20,6 +20,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
+	"github.com/marcpfuller/grimoire/internal/auth"
 	"github.com/marcpfuller/grimoire/internal/db"
 	"github.com/marcpfuller/grimoire/internal/logger"
 	internalpty "github.com/marcpfuller/grimoire/internal/pty"
@@ -79,6 +80,12 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Load the bearer token written by the daemon on first start.
+	token, err := auth.Load()
+	if err != nil {
+		return fmt.Errorf("auth: %w", err)
+	}
+
 	// Register this pane with the daemon. Fails fast if the daemon is not
 	// running — shell hooks require the daemon's HTTP API to be available.
 	width, height, sizeErr := term.GetSize(int(os.Stdin.Fd()))
@@ -87,7 +94,7 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		// (e.g. testing or piped input).
 		width, height = 220, 50
 	}
-	if err := registerPane(daemonAddr, paneID, projectID, width, height); err != nil {
+	if err := registerPane(daemonAddr, paneID, projectID, token, width, height); err != nil {
 		return fmt.Errorf("register pane: %w", err)
 	}
 
@@ -126,7 +133,7 @@ func runShell(cmd *cobra.Command, _ []string) error {
 	}()
 
 	// Warn the operator on stderr if the daemon becomes unreachable mid-session.
-	go watchDaemon(ctx, daemonAddr)
+	go watchDaemon(ctx, daemonAddr, token)
 
 	sess := internalpty.New(store, internalpty.SessionConfig{
 		PaneID:     paneID,
@@ -149,7 +156,7 @@ func runShell(cmd *cobra.Command, _ []string) error {
 	signal.Stop(sigCh)
 
 	// Deregister pane with daemon (best-effort; abnormal exits are fine).
-	_ = deregisterPane(daemonAddr, paneID)
+	_ = deregisterPane(daemonAddr, paneID, token)
 
 	return runErr
 }
@@ -221,7 +228,7 @@ func buildShellInit(shellBin string) (shellArgs, extraEnv []string, cleanup func
 // watchDaemon polls GET /api/health every 30s and writes a warning to stderr
 // the first time the daemon becomes unreachable, then an info line when it
 // recovers. It returns when ctx is cancelled (i.e. the shell exits).
-func watchDaemon(ctx context.Context, addr string) {
+func watchDaemon(ctx context.Context, addr, token string) {
 	const interval = 30 * time.Second
 	const timeout = 2 * time.Second
 
@@ -235,7 +242,12 @@ func watchDaemon(ctx context.Context, addr string) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			resp, err := client.Get(addr + "/api/health") //nolint:noctx // best-effort probe; context cancel handles shutdown
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, addr+"/api/health", nil)
+			if err != nil {
+				continue
+			}
+			req.Header.Set("Authorization", "Bearer "+token)
+			resp, err := client.Do(req)
 			if err != nil || resp.StatusCode != http.StatusOK {
 				if resp != nil {
 					resp.Body.Close() //nolint:errcheck,gosec // G104: best-effort drain
@@ -258,15 +270,21 @@ func watchDaemon(ctx context.Context, addr string) {
 }
 
 // registerPane calls POST /api/register on the daemon.
-func registerPane(addr, paneID, projectID string, width, height int) error {
+func registerPane(addr, paneID, projectID, token string, width, height int) error {
 	body, _ := json.Marshal(map[string]any{
 		"pane_id":    paneID,
 		"project_id": projectID,
 		"width":      width,
 		"height":     height,
 	})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, addr+"/api/register", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("register pane: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(addr+"/api/register", "application/json", bytes.NewReader(body))
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("daemon unreachable (%s): %w", addr, err)
 	}
@@ -278,10 +296,16 @@ func registerPane(addr, paneID, projectID string, width, height int) error {
 }
 
 // deregisterPane calls POST /api/deregister on the daemon.
-func deregisterPane(addr, paneID string) error {
+func deregisterPane(addr, paneID, token string) error {
 	body, _ := json.Marshal(map[string]string{"pane_id": paneID})
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, addr+"/api/deregister", bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("deregister: build request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Post(addr+"/api/deregister", "application/json", bytes.NewReader(body))
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("deregister: %w", err)
 	}

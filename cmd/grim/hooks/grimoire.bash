@@ -30,6 +30,14 @@ fi
 : "${GRIMOIRE_DAEMON_ADDR:=http://127.0.0.1:7777}"
 : "${GRIMOIRE_CURL_TIMEOUT:=2}"
 
+# Load the bearer token from the token file. Reading from the file (rather
+# than an exported env var) means child processes spawned inside the session
+# never inherit the token — only this shell process has it.
+_grimoire_tok=""
+if [[ -r "${HOME}/.grim/token" ]]; then
+    _grimoire_tok=$(tr -d '[:space:]' < "${HOME}/.grim/token" 2>/dev/null)
+fi
+
 # Internal state — do not set these manually.
 _grimoire_next_short_id=""
 _grimoire_active_short_id=""
@@ -52,6 +60,7 @@ _grimoire_ms() {
 _grimoire_reserve_next_id() {
     local response
     response=$(curl -sf --max-time "${GRIMOIRE_CURL_TIMEOUT}" \
+        -H "Authorization: Bearer ${_grimoire_tok}" \
         "${GRIMOIRE_DAEMON_ADDR}/api/next-id?pane=${GRIMOIRE_PANE_ID}" \
         2>/dev/null) || { _grimoire_next_short_id=""; return; }
 
@@ -91,6 +100,7 @@ _grimoire_preexec_trap() {
     response=$(curl -sf --max-time "${GRIMOIRE_CURL_TIMEOUT}" \
         -X POST "${GRIMOIRE_DAEMON_ADDR}/api/execute" \
         -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${_grimoire_tok}" \
         -d "{\"pane_id\":\"${GRIMOIRE_PANE_ID}\",\"command\":$(printf '%s' "${cmd}" | jq -Rs .),\"started_at\":${started_at}}" \
         2>/dev/null) || return
 
@@ -125,6 +135,7 @@ _grimoire_precmd() {
         curl -sf --max-time "${GRIMOIRE_CURL_TIMEOUT}" \
             -X POST "${GRIMOIRE_DAEMON_ADDR}/api/precmd" \
             -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${_grimoire_tok}" \
             -d "{\"pane_id\":\"${GRIMOIRE_PANE_ID}\",\"short_id\":\"${_grimoire_active_short_id}\",\"ended_at\":${ended_at},\"exit_code\":${exit_code}}" \
             2>/dev/null || true
 
