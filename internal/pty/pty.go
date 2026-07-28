@@ -154,6 +154,15 @@ type Session struct {
 	out io.Writer
 	// logger is pre-bound with pane_id. nil is safe — log calls are no-ops.
 	logger *slog.Logger
+	// promptBuf accumulates PTY bytes received while the capture state is idle
+	// (i.e. between a deactivate and the next activate). These bytes are the
+	// shell prompt and echoed command line. They arrive in separate buffer reads
+	// from the activate marker, so they cannot be captured via the in-buffer
+	// "before" slice. When an activate marker is processed, promptBuf is
+	// prepended to the first stored chunk so the UI shows the full shell
+	// context (user@host:~/dir$ command) above the output. Cleared on every
+	// deactivate and after each activate.
+	promptBuf []byte
 }
 
 // SessionConfig holds all configuration for a Session.
@@ -293,8 +302,12 @@ func (s *Session) processChunk(ctx context.Context, chunk []byte) {
 			}
 		}
 		s.state.deactivate()
+		// Reset the prompt accumulator so the next command starts fresh.
+		s.promptBuf = nil
 		if len(after) > 0 {
 			_, _ = s.out.Write(after)
+			// after bytes are the beginning of the next prompt; accumulate them.
+			s.promptBuf = append(s.promptBuf, after...)
 		}
 		return
 	}
@@ -303,17 +316,31 @@ func (s *Session) processChunk(ctx context.Context, chunk []byte) {
 	if bIdx, aIdx, params, found := findActivateMarker(chunk); found {
 		before := chunk[:bIdx]
 		after := chunk[aIdx:]
-		// Bytes before the activate marker are prompt/line-editor output.
-		// If unexpectedly in capturing state (shouldn't occur in normal flow),
-		// store them under the outgoing commandID before switching.
 		cmdID, startedAt, shortID := s.state.snapshot()
 		if len(before) > 0 {
 			_, _ = s.out.Write(before)
-			if cmdID != 0 {
-				s.storeChunk(ctx, before, cmdID, startedAt, shortID)
-			}
 		}
 		s.state.activate(params.commandID, params.startedAt, params.shortID)
+		if cmdID != 0 {
+			// Edge case: still capturing a previous command (shouldn't occur
+			// in normal flow where precmd always fires first). Store the tail
+			// under the outgoing ID; discard any stale promptBuf.
+			if len(before) > 0 {
+				s.storeChunk(ctx, before, cmdID, startedAt, shortID)
+			}
+		} else {
+			// Normal flow: promptBuf holds prompt bytes from prior idle reads;
+			// before holds any prompt bytes that arrived in the same read as
+			// the activate marker. Concatenate and store as the first chunk so
+			// the UI shows the full shell context (user@host:~/dir$ command).
+			promptChunk := make([]byte, len(s.promptBuf)+len(before))
+			copy(promptChunk, s.promptBuf)
+			copy(promptChunk[len(s.promptBuf):], before)
+			if len(promptChunk) > 0 {
+				s.storeChunk(ctx, promptChunk, params.commandID, params.startedAt, params.shortID)
+			}
+		}
+		s.promptBuf = nil
 		if len(after) > 0 {
 			_, _ = s.out.Write(after)
 			s.storeChunk(ctx, after, params.commandID, params.startedAt, params.shortID)
@@ -326,6 +353,11 @@ func (s *Session) processChunk(ctx context.Context, chunk []byte) {
 	_, _ = s.out.Write(chunk)
 	if cmdID != 0 {
 		s.storeChunk(ctx, chunk, cmdID, startedAt, shortID)
+	} else {
+		// Idle state: accumulate bytes into promptBuf so the full prompt and
+		// echoed command line can be prepended to the command's output when
+		// the next activate marker arrives.
+		s.promptBuf = append(s.promptBuf, chunk...)
 	}
 }
 
