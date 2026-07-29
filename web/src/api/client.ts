@@ -26,12 +26,18 @@ export const RealAPI: ApiClient = {
       headers: { ...authHeader(), 'Content-Type': 'application/json' },
       body: JSON.stringify(config),
     }).then(res => res.json() as Promise<AppConfig>),
-  exportCast: id =>
+  exportCast: ids =>
     fetch('/api/cast', {
       method: 'POST',
       headers: { ...authHeader(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id }),
-    }).then(res => res.json() as Promise<{ success: boolean; path: string }>),
+      body: JSON.stringify({ ids }),
+    }).then(async res => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText })) as { error?: string }
+        throw new Error(body.error ?? res.statusText)
+      }
+      return res.json() as Promise<{ success: boolean; path: string }>
+    }),
   fetchSessions: () =>
     fetch('/api/sessions', { headers: authHeader() }).then(res => res.json() as Promise<Session[]>),
   fetchTags: () =>

@@ -1,4 +1,4 @@
-import type { ActiveView, Session, Tag, Command, AppConfig, SelectedSetting } from '../../api/types'
+import type { ActiveView, Session, Tag, Command, AppConfig, SelectedSetting, Toast } from '../../api/types'
 import { SessionList } from './SessionList'
 import { TagList } from './TagList'
 import { SearchPanel } from './SearchPanel'
@@ -16,6 +16,7 @@ export interface SidebarProps {
   config: AppConfig | null
   selectedSetting: SelectedSetting | null
   setSelectedSetting: (s: SelectedSetting) => void
+  addToast: (toast: Omit<Toast, 'id'>) => void
 }
 
 export function Sidebar({
@@ -30,10 +31,11 @@ export function Sidebar({
   config,
   selectedSetting,
   setSelectedSetting,
+  addToast,
 }: SidebarProps) {
   return (
-    <div className="w-sidebar-w bg-vscode-sidebar flex flex-col shrink-0 border-r border-vscode-border z-10">
-      <div className="px-4 py-2 text-[11px] font-bold uppercase text-vscode-text-muted tracking-wider bg-vscode-sidebar">
+    <div className="sidebar w-sidebar-w bg-vscode-sidebar flex flex-col shrink-0 border-r border-vscode-border z-10">
+      <div className="sidebar-section-header px-4 py-2 text-[11px] font-bold uppercase text-vscode-text-muted tracking-wider bg-vscode-sidebar">
         {activeView.toUpperCase()}
       </div>
 
@@ -44,6 +46,7 @@ export function Sidebar({
           toggleSession={toggleSession}
           selectedCmdId={selectedCmdId}
           setSelectedCmdId={setSelectedCmdId}
+          addToast={addToast}
         />
       )}
       {activeView === 'tags' && (

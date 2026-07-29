@@ -83,7 +83,7 @@ _grimoire_expand_ps1() {
     p="${p//\\H/$HOSTNAME}"
     p="${p//\\w/${PWD/#$HOME/\~}}"
     p="${p//\\W/${PWD##*/}}"
-    p="${p//\\$/\\$}"                       # keep literal $ (avoid eval hazard)
+    p="${p//\\$/\$}"                        # expand \$ to literal $
     p="${p//\\e/\\033}"                     # normalise \e to octal for printf %b
     printf '%b' "$p"
 }

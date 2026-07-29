@@ -97,8 +97,12 @@ func Synthesize(ctx context.Context, store Store, cfg Params) (string, error) {
 	// Determine output file path.
 	outPath := cfg.OutFile
 	if outPath == "" {
-		ts := time.Now().Unix()
-		outPath = filepath.Join(cfg.OutDir, fmt.Sprintf("grimoire-%d.cast", ts))
+		ts := time.Now().Format("20060102-150405")
+		outPath = filepath.Join(cfg.OutDir, fmt.Sprintf("grimoire-%s.cast", ts))
+		// Avoid overwriting an existing file if two exports land in the same second.
+		if _, err := os.Stat(outPath); err == nil {
+			outPath = filepath.Join(cfg.OutDir, fmt.Sprintf("grimoire-%s-%d.cast", ts, time.Now().UnixNano()))
+		}
 	}
 
 	// Ensure output directory exists.

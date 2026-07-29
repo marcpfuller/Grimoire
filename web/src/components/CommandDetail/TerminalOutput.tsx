@@ -9,8 +9,8 @@ export function TerminalOutput({ output }: TerminalOutputProps) {
   const html = useMemo(() => ansiToHtml(output), [output])
 
   return (
-    <div className="flex-1 flex flex-col border border-vscode-border rounded-sm overflow-hidden bg-[#0d0d0d]">
-      <div className="bg-[#181818] border-b border-vscode-border px-3 py-1.5 flex items-center justify-between shrink-0">
+    <div className="terminal-output flex-1 flex flex-col border border-vscode-border rounded-sm overflow-hidden bg-[#0d0d0d]">
+      <div className="terminal-output-toolbar bg-[#181818] border-b border-vscode-border px-3 py-1.5 flex items-center justify-between shrink-0">
         <span className="font-semibold text-vscode-text-muted flex items-center gap-2 text-[12px]">
           <span className="material-symbols-outlined text-[14px]">terminal</span> stdout
         </span>
@@ -20,7 +20,7 @@ export function TerminalOutput({ output }: TerminalOutputProps) {
         </div>
       </div>
       <div
-        className="p-3 overflow-auto font-code text-[12px] text-[#cccccc] whitespace-pre-wrap leading-relaxed select-text"
+        className="terminal-output-content p-3 overflow-auto font-code text-[12px] text-[#cccccc] whitespace-pre-wrap leading-relaxed select-text"
         dangerouslySetInnerHTML={{ __html: html }}
       />
     </div>

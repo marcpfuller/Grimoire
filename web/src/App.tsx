@@ -45,9 +45,9 @@ export default function App() {
   }, [selectedCmdId, sessions])
 
   return (
-    <div className="flex flex-col h-screen overflow-hidden">
+    <div className="app flex flex-col h-screen overflow-hidden">
       <TopBar />
-      <div className="flex flex-1 overflow-hidden">
+      <div className="app-body flex flex-1 overflow-hidden">
         <ActivityBar activeView={activeView} setActiveView={setActiveView} />
         <Sidebar
           activeView={activeView}
@@ -61,6 +61,7 @@ export default function App() {
           config={config}
           selectedSetting={selectedSetting}
           setSelectedSetting={setSelectedSetting}
+          addToast={addToast}
         />
         {activeView === 'settings' ? (
           <SettingsEditor selectedSetting={selectedSetting} updateConfig={updateConfig} />
