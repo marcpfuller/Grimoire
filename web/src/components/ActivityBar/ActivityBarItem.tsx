@@ -20,7 +20,7 @@ export function ActivityBarItem({ id, icon, title, activeView, setActiveView }: 
       className={`w-full flex justify-center py-3 cursor-pointer duration-150 border-l-2 ${stateClass} ${id === 'settings' ? 'mt-auto' : ''}`}
       title={title}
     >
-      <span className="material-symbols-outlined text-[24px]">{icon}</span>
+      <span className="material-symbols-outlined !text-[30px]">{icon}</span>
     </div>
   )
 }
