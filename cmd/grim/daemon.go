@@ -52,7 +52,7 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	// --- logger ---
 	var level slog.Level
 	_ = level.UnmarshalText([]byte(viper.GetString("log.level")))
-	log, rotator, _, err := logger.New(logger.Config{
+	log, rotator, levelVar, err := logger.New(logger.Config{
 		Dir:        viper.GetString("log.dir"),
 		Filename:   viper.GetString("log.filename"),
 		Level:      level,
@@ -141,6 +141,24 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 		defer syncWg.Done()
 		syncer.Run(ctx)
 	}()
+
+	// Wire live-reload tunables into the API server.
+	srv.SetRuntime(api.RuntimeConfig{
+		Syncer:   syncer,
+		LevelVar: levelVar,
+		NewPusher: func(ctx context.Context, url, token string) (grimsync.Pusher, error) {
+			if url == "" || token == "" {
+				log.Warn("ghostwriter pusher disabled — url or token is empty")
+				return &noopPusher{}, nil
+			}
+			client := ghostwriter.New(store, url, token, log)
+			if err := client.Init(ctx); err != nil {
+				return nil, fmt.Errorf("ghostwriter init: %w", err)
+			}
+			log.Info("ghostwriter pusher enabled", "url", url)
+			return client, nil
+		},
+	})
 
 	// --- signals ---
 	sigCh := make(chan os.Signal, 1)

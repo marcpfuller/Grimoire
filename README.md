@@ -130,10 +130,10 @@ grim cast <id> [id...]
 
 Rules:
 - All IDs must belong to the same pane session.
-- IDs must be supplied in chronological (ascending seq) order.
-- Commands between the selected IDs are skipped — non-contiguous picks are fine.
+- IDs may be supplied in any order and duplicates are ignored — the daemon sorts by sequence number and deduplicates before synthesis.
+- Commands between selected IDs are skipped — non-contiguous picks are fine.
 
-The output path defaults to `<cast.dir>/grimoire-<timestamp>.cast`.
+The output path defaults to `<cast.dir>/grimoire-<YYYYMMDD-HHMMSS>.cast`.
 
 ```bash
 # Single command
@@ -145,8 +145,57 @@ grim cast abc0001 abc0025
 # Cherry-pick specific commands (skipping ones in between)
 grim cast abc0001 abc0005 abc0012
 
+# IDs may be passed in any order
+grim cast abc0012 abc0001 abc0005
+
 # Explicit output path
 grim cast abc0001 abc0012 --out ~/recordings/recon.cast
 ```
 
-Single-command and multi-command exports are also available from the Web UI **Command Detail** panel — click **Export .cast** to write the file to `cast.dir` and see the path in a toast notification.
+Multi-command export is also available from the Web UI — select commands using the checkboxes that appear on hover in the Session Explorer, then click **Export .cast** at the bottom of the sidebar.
+
+## View Shell History
+
+List recorded commands for the current pane (or all panes):
+
+```bash
+# Current pane (reads $GRIMOIRE_PANE_ID)
+grim history
+
+# Specific pane
+grim history --pane <pane-id>
+
+# All panes
+grim history --all
+```
+
+Output is a tab-aligned table: `ID | TIMESTAMP | DURATION | EXIT | COMMAND`.
+
+## Manage Config at Runtime
+
+View or update daemon configuration without restarting:
+
+```bash
+# Print all config keys
+grim config get
+
+# Print a single key
+grim config get sync.interval_seconds
+
+# Update a key — takes effect immediately
+grim config set sync.interval_seconds 60
+grim config set ghostwriter.url https://ghostwriter.example.com
+grim config set ghostwriter.token gw_...
+grim config set log.level debug
+```
+
+Changes are written back to `config.yaml` and applied live:
+
+| Key | Live effect |
+|-----|-------------|
+| `sync.interval_seconds` | Sync loop ticker resets immediately |
+| `ghostwriter.url` / `ghostwriter.token` | Ghostwriter pusher is swapped in-place (no restart needed) |
+| `log.level` | `slog.LevelVar` updated immediately; change is logged |
+| `cast.dir` | Used on the next export |
+
+Settings are also editable from the **Settings** view in the Web UI.

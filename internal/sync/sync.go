@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	stdsync "sync"
 	"time"
 
 	"github.com/marcpfuller/grimoire/internal/db"
@@ -42,10 +43,12 @@ type Config struct {
 
 // Syncer runs a background loop that pushes unsynced commands to Ghostwriter.
 type Syncer struct {
-	store  db.Store
-	pusher Pusher
-	cfg    Config
-	log    *slog.Logger
+	store   db.Store
+	mu      stdsync.RWMutex
+	pusher  Pusher
+	cfg     Config
+	log     *slog.Logger
+	resetCh chan struct{} // buffered(1); signals Run to reset the ticker
 }
 
 // New creates a Syncer. logger may be nil — all log calls become no-ops.
@@ -54,11 +57,44 @@ func New(store db.Store, pusher Pusher, cfg Config, logger *slog.Logger) *Syncer
 	if cfg.Interval <= 0 {
 		cfg.Interval = 30 * time.Second
 	}
-	return &Syncer{store: store, pusher: pusher, cfg: cfg, log: logger}
+	return &Syncer{
+		store:   store,
+		pusher:  pusher,
+		cfg:     cfg,
+		log:     logger,
+		resetCh: make(chan struct{}, 1),
+	}
+}
+
+// SetInterval updates the sync interval and signals the running loop to reset
+// its ticker immediately. Safe to call from any goroutine.
+func (s *Syncer) SetInterval(d time.Duration) {
+	if d <= 0 {
+		d = 30 * time.Second
+	}
+	s.mu.Lock()
+	s.cfg.Interval = d
+	s.mu.Unlock()
+	select {
+	case s.resetCh <- struct{}{}:
+	default:
+	}
+}
+
+// SetPusher swaps the active pusher. The next sync batch uses the new pusher.
+// Safe to call from any goroutine.
+func (s *Syncer) SetPusher(p Pusher) {
+	s.mu.Lock()
+	s.pusher = p
+	s.mu.Unlock()
 }
 
 // Interval returns the configured sync interval.
-func (s *Syncer) Interval() time.Duration { return s.cfg.Interval }
+func (s *Syncer) Interval() time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.Interval
+}
 
 // RunOnce executes a single sync batch synchronously. Primarily used in tests;
 // in production code prefer Run.
@@ -72,13 +108,23 @@ func (s *Syncer) RunOnce(ctx context.Context) {
 func (s *Syncer) Run(ctx context.Context) {
 	s.syncBatch(ctx)
 
-	ticker := time.NewTicker(s.cfg.Interval)
+	s.mu.RLock()
+	interval := s.cfg.Interval
+	s.mu.RUnlock()
+
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ticker.C:
 			s.syncBatch(ctx)
+		case <-s.resetCh:
+			ticker.Stop()
+			s.mu.RLock()
+			interval = s.cfg.Interval
+			s.mu.RUnlock()
+			ticker = time.NewTicker(interval)
 		case <-ctx.Done():
 			drainCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			s.syncBatch(drainCtx)
@@ -96,6 +142,10 @@ func (s *Syncer) Run(ctx context.Context) {
 // Auth/config failures (*AuthError: 401, 403) are logged at ERROR — the
 // operator must act.
 func (s *Syncer) syncBatch(ctx context.Context) {
+	s.mu.RLock()
+	pusher := s.pusher
+	s.mu.RUnlock()
+
 	cmds, err := s.store.ListUnsynced(ctx)
 	if err != nil {
 		s.logWarn("sync: ListUnsynced failed", "err", err)
@@ -106,7 +156,7 @@ func (s *Syncer) syncBatch(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := s.pusher.PushCommand(ctx, cmd); err != nil {
+		if err := pusher.PushCommand(ctx, cmd); err != nil {
 			var authErr *AuthError
 			if errors.As(err, &authErr) {
 				s.logError("sync: push failed — fix token/config",

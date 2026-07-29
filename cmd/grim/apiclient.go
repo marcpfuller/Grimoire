@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -49,5 +51,30 @@ func apiGet(urlPath string) (*http.Response, error) {
 		return nil, fmt.Errorf("apiclient: build request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
+	return http.DefaultClient.Do(req)
+}
+
+// apiPost performs an authenticated POST with a JSON body against the daemon
+// and returns the response. The caller is responsible for closing resp.Body.
+func apiPost(urlPath string, body any) (*http.Response, error) {
+	tok, err := daemonToken()
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("apiclient: marshal body: %w", err)
+	}
+	addr := fmt.Sprintf("http://%s:%d%s",
+		viper.GetString("server.host"),
+		viper.GetInt("server.port"),
+		urlPath,
+	)
+	req, err := http.NewRequest(http.MethodPost, addr, bytes.NewReader(encoded)) //nolint:gosec // G107: addr is localhost from config
+	if err != nil {
+		return nil, fmt.Errorf("apiclient: build request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok)
+	req.Header.Set("Content-Type", "application/json")
 	return http.DefaultClient.Do(req)
 }

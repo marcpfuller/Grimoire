@@ -876,10 +876,13 @@ func TestHandleUpdateConfig(t *testing.T) {
 			body:       map[string]any{},
 			wantStatus: http.StatusOK,
 			check: func(t *testing.T, w *httptest.ResponseRecorder) {
-				var cfg map[string]any
-				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
-				assert.Contains(t, cfg, "ghostwriter")
-				assert.Contains(t, cfg, "sync")
+				var result struct {
+					Config  map[string]any `json:"config"`
+					Changed []string       `json:"changed"`
+				}
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&result))
+				assert.Contains(t, result.Config, "ghostwriter")
+				assert.Contains(t, result.Config, "sync")
 			},
 		},
 		{
@@ -889,9 +892,12 @@ func TestHandleUpdateConfig(t *testing.T) {
 			},
 			wantStatus: http.StatusOK,
 			check: func(t *testing.T, w *httptest.ResponseRecorder) {
-				var cfg map[string]map[string]any
-				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
-				assert.Equal(t, "https://updated.example.com", cfg["ghostwriter"]["url"])
+				var result struct {
+					Config  map[string]map[string]any `json:"config"`
+					Changed []string                  `json:"changed"`
+				}
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&result))
+				assert.Equal(t, "https://updated.example.com", result.Config["ghostwriter"]["url"])
 			},
 		},
 		{
@@ -913,9 +919,12 @@ func TestHandleUpdateConfig(t *testing.T) {
 			},
 			wantStatus: http.StatusOK,
 			check: func(t *testing.T, w *httptest.ResponseRecorder) {
-				var cfg map[string]map[string]any
-				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
-				assert.NotContains(t, cfg["ghostwriter"], "injected_field")
+				var result struct {
+					Config  map[string]map[string]any `json:"config"`
+					Changed []string                  `json:"changed"`
+				}
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&result))
+				assert.NotContains(t, result.Config["ghostwriter"], "injected_field")
 			},
 		},
 		{
@@ -925,9 +934,12 @@ func TestHandleUpdateConfig(t *testing.T) {
 			body:       map[string]any{"sync": map[string]any{"interval_seconds": 999}},
 			wantStatus: http.StatusOK,
 			check: func(t *testing.T, w *httptest.ResponseRecorder) {
-				var cfg map[string]map[string]any
-				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
-				assert.InDelta(t, float64(999), cfg["sync"]["interval_seconds"], 0.001)
+				var result struct {
+					Config  map[string]map[string]any `json:"config"`
+					Changed []string                  `json:"changed"`
+				}
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&result))
+				assert.InDelta(t, float64(999), result.Config["sync"]["interval_seconds"], 0.001)
 			},
 		},
 		{
@@ -938,11 +950,14 @@ func TestHandleUpdateConfig(t *testing.T) {
 			},
 			wantStatus: http.StatusOK,
 			check: func(t *testing.T, w *httptest.ResponseRecorder) {
-				var cfg map[string]map[string]any
-				require.NoError(t, json.NewDecoder(w.Body).Decode(&cfg))
-				assert.Equal(t, "https://multi.example.com", cfg["ghostwriter"]["url"])
-				assert.Equal(t, "tok-new", cfg["ghostwriter"]["token"])
-				assert.Equal(t, "warn", cfg["log"]["level"])
+				var result struct {
+					Config  map[string]map[string]any `json:"config"`
+					Changed []string                  `json:"changed"`
+				}
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&result))
+				assert.Equal(t, "https://multi.example.com", result.Config["ghostwriter"]["url"])
+				assert.Equal(t, "tok-new", result.Config["ghostwriter"]["token"])
+				assert.Equal(t, "warn", result.Config["log"]["level"])
 			},
 		},
 	}

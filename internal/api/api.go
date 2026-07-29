@@ -15,6 +15,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,8 +32,25 @@ import (
 	"github.com/marcpfuller/grimoire/internal/db"
 	"github.com/marcpfuller/grimoire/internal/events"
 	"github.com/marcpfuller/grimoire/internal/scrub"
+	grimsync "github.com/marcpfuller/grimoire/internal/sync"
 	"github.com/marcpfuller/grimoire/internal/util"
 )
+
+// RuntimeConfig holds the live-updatable daemon tunables the API can change
+// without a daemon restart. All fields are optional — nil means no-op.
+type RuntimeConfig struct {
+	// Syncer is the running sync loop. SetInterval and SetPusher are called
+	// when the matching config keys change.
+	Syncer *grimsync.Syncer
+
+	// LevelVar controls the JSON log sink's minimum level at runtime.
+	LevelVar *slog.LevelVar
+
+	// NewPusher builds and initialises a Ghostwriter pusher for the given
+	// url/token pair. Returning a nil Pusher (or an error) prevents the swap.
+	// When url or token is empty it should return a no-op pusher, not an error.
+	NewPusher func(ctx context.Context, url, token string) (grimsync.Pusher, error)
+}
 
 // Server holds the shared dependencies for all HTTP handlers.
 type Server struct {
@@ -40,6 +58,7 @@ type Server struct {
 	maxShortIDRetries int
 	broker            *events.Broker
 	logger            *slog.Logger
+	runtime           RuntimeConfig
 }
 
 // New creates a Server. broker and logger may be nil — broadcasts and log
@@ -51,6 +70,12 @@ func New(store db.Store, maxShortIDRetries int, broker *events.Broker, logger *s
 		broker:            broker,
 		logger:            logger,
 	}
+}
+
+// SetRuntime wires the live-updatable daemon tunables into the server after
+// construction. Call once before serving requests.
+func (s *Server) SetRuntime(cfg RuntimeConfig) {
+	s.runtime = cfg
 }
 
 // broadcast sends e to the event broker if one is configured.
@@ -593,6 +618,12 @@ func buildConfig() map[string]map[string]any {
 	return cfg
 }
 
+// updateConfigResponse is returned by POST /api/config.
+type updateConfigResponse struct {
+	Config  map[string]map[string]any `json:"config"`
+	Changed []string                  `json:"changed"`
+}
+
 // handleGetConfig handles GET /api/config.
 func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildConfig())
@@ -600,6 +631,8 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 // handleUpdateConfig handles POST /api/config.
 // Only keys listed in writableConfig are accepted; unknown groups/keys are silently ignored.
+// Changed keys take effect immediately: sync interval resets the ticker, log level
+// updates the live slog.LevelVar, and ghostwriter credentials swap the pusher.
 func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	var body map[string]map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -607,14 +640,24 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var changed []string
+	gwChanged := false
+
 	for group, allowedKeys := range writableConfig {
 		vals, ok := body[group]
 		if !ok {
 			continue
 		}
 		for _, key := range allowedKeys {
-			if val, exists := vals[key]; exists {
-				viper.Set(group+"."+key, val)
+			val, exists := vals[key]
+			if !exists {
+				continue
+			}
+			dotKey := group + "." + key
+			old := viper.Get(dotKey)
+			viper.Set(dotKey, val)
+			if fmt.Sprint(old) != fmt.Sprint(val) {
+				changed = append(changed, dotKey)
 			}
 		}
 	}
@@ -624,7 +667,44 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 		// Non-fatal — values updated in memory even if persist fails.
 	}
 
-	writeJSON(w, http.StatusOK, buildConfig())
+	// Apply runtime side-effects for each changed key.
+	for _, key := range changed {
+		switch key {
+		case "log.level":
+			if s.runtime.LevelVar != nil {
+				var lvl slog.Level
+				_ = lvl.UnmarshalText([]byte(viper.GetString("log.level")))
+				s.runtime.LevelVar.Set(lvl)
+				s.logInfo("config: log level changed", "level", lvl.String())
+			}
+		case "sync.interval_seconds":
+			if s.runtime.Syncer != nil {
+				d := time.Duration(viper.GetInt("sync.interval_seconds")) * time.Second
+				s.runtime.Syncer.SetInterval(d)
+				s.logInfo("config: sync interval changed", "interval", d.String())
+			}
+		case "ghostwriter.url", "ghostwriter.token":
+			gwChanged = true
+		}
+	}
+
+	if gwChanged && s.runtime.Syncer != nil && s.runtime.NewPusher != nil {
+		url := viper.GetString("ghostwriter.url")
+		tok := viper.GetString("ghostwriter.token")
+		pusher, err := s.runtime.NewPusher(r.Context(), url, tok)
+		if err != nil {
+			s.logWarn("config: ghostwriter pusher swap failed", "err", err)
+			writeError(w, http.StatusInternalServerError, "ghostwriter pusher init failed: "+err.Error())
+			return
+		}
+		s.runtime.Syncer.SetPusher(pusher)
+		s.logInfo("config: ghostwriter pusher swapped", "url", url)
+	}
+
+	if changed == nil {
+		changed = []string{}
+	}
+	writeJSON(w, http.StatusOK, updateConfigResponse{Config: buildConfig(), Changed: changed})
 }
 
 // handleExportCast handles POST /api/cast.
@@ -703,6 +783,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 func (s *Server) logWarn(msg string, args ...any) {
 	if s.logger != nil {
 		s.logger.Warn(msg, args...)
+	}
+}
+
+func (s *Server) logInfo(msg string, args ...any) {
+	if s.logger != nil {
+		s.logger.Info(msg, args...)
 	}
 }
 
