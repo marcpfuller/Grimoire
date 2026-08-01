@@ -255,3 +255,107 @@ func TestAuthError_implements_error(t *testing.T) {
 	require.ErrorAs(t, ae, new(*grimsync.AuthError))
 	require.ErrorIs(t, ae.Unwrap(), inner)
 }
+
+// --- SetInterval ---
+
+func TestSyncer_SetInterval_updates_live_ticker(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+
+	callCount := 0
+	ready := make(chan struct{})
+	store.On("ListUnsynced", mock.Anything).
+		Run(func(_ mock.Arguments) {
+			callCount++
+			if callCount == 2 {
+				close(ready)
+			}
+		}).
+		Return([]*db.Command{}, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Start with a very long interval so the second tick never fires on its own.
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Hour}, nil)
+	go s.Run(ctx)
+
+	// Wait for the immediate first fire.
+	time.Sleep(20 * time.Millisecond)
+
+	// Shorten the interval to 5 ms — the ticker should reset and fire quickly.
+	s.SetInterval(5 * time.Millisecond)
+
+	select {
+	case <-ready:
+		// second batch fired after interval reset
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("second sync tick did not fire after SetInterval")
+	}
+}
+
+func TestSyncer_SetInterval_zero_defaults_to_30s(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	store.On("ListUnsynced", mock.Anything).Return([]*db.Command{}, nil).Maybe()
+	s := grimsync.New(store, &mockPusher{}, grimsync.Config{Interval: time.Minute}, nil)
+	s.SetInterval(0)
+	assert.Equal(t, 30*time.Second, s.Interval())
+}
+
+// --- SetPusher ---
+
+func TestSyncer_SetPusher_swaps_active_pusher(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	original := &mockPusher{}
+	replacement := &mockPusher{}
+
+	cmd := makeCmd(1)
+	store.On("ListUnsynced", mock.Anything).Return([]*db.Command{cmd}, nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(1)).Return(nil).Once()
+
+	s := grimsync.New(store, original, grimsync.Config{Interval: time.Second}, nil)
+	s.SetPusher(replacement)
+
+	s.RunOnce(context.Background())
+
+	require.Empty(t, original.pushed, "original pusher must not be used after swap")
+	require.Len(t, replacement.pushed, 1, "replacement pusher must handle the command")
+}
+
+func TestSyncer_OnSynced_called_after_mark(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+
+	cmd := makeCmd(1)
+	store.On("ListUnsynced", mock.Anything).Return([]*db.Command{cmd}, nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(1)).Return(nil).Once()
+
+	var synced []string
+	s := grimsync.New(store, pusher, grimsync.Config{
+		Interval: time.Second,
+		OnSynced: func(shortID string) { synced = append(synced, shortID) },
+	}, nil)
+
+	s.RunOnce(context.Background())
+
+	require.Equal(t, []string{cmd.ShortID}, synced)
+}
+
+func TestSyncer_OnSynced_not_called_on_mark_error(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+
+	cmd := makeCmd(1)
+	store.On("ListUnsynced", mock.Anything).Return([]*db.Command{cmd}, nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(1)).Return(errors.New("db error")).Once()
+
+	var synced []string
+	s := grimsync.New(store, pusher, grimsync.Config{
+		Interval: time.Second,
+		OnSynced: func(shortID string) { synced = append(synced, shortID) },
+	}, nil)
+
+	s.RunOnce(context.Background())
+
+	require.Empty(t, synced, "OnSynced must not be called when MarkCommandSynced fails")
+}

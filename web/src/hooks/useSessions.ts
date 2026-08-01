@@ -13,8 +13,18 @@ export function useSessions(): Session[] {
   // Initial load.
   useEffect(() => { fetchSessions() }, [fetchSessions])
 
-  // Re-fetch whenever the daemon notifies us that something changed.
-  useServerEvents(useCallback(() => { fetchSessions() }, [fetchSessions]))
+  // Re-fetch on structural changes; on command_synced do a targeted state update.
+  useServerEvents(useCallback((event) => {
+    if (event.type === 'command_synced') {
+      const shortId = event.data.short_id as string
+      setSessions(prev => prev.map(s => ({
+        ...s,
+        commands: s.commands.map(c => c.id === shortId ? { ...c, syncedGW: true } : c),
+      })))
+    } else {
+      fetchSessions()
+    }
+  }, [fetchSessions]))
 
   return sessions
 }

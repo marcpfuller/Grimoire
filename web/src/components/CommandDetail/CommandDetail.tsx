@@ -11,7 +11,7 @@ export interface CommandDetailProps {
 }
 
 export function CommandDetail({ command, session, addToast }: CommandDetailProps) {
-  const output = useCommandOutput(command?.id)
+  const outputState = useCommandOutput(command?.id)
 
   if (!command) {
     return (
@@ -39,7 +39,7 @@ export function CommandDetail({ command, session, addToast }: CommandDetailProps
         <div className="flex flex-col gap-4 border-b border-vscode-border pb-4">
           <CommandHeader command={command} session={session} onCopy={handleCopy} />
         </div>
-        <TerminalOutput output={output} />
+        <TerminalOutput outputState={outputState} />
         <MetadataEditor commandId={command.id} addToast={addToast} />
       </div>
     </div>

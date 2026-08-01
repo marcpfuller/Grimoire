@@ -47,6 +47,7 @@ export function Sidebar({
           selectedCmdId={selectedCmdId}
           setSelectedCmdId={setSelectedCmdId}
           addToast={addToast}
+          gwConfigured={Boolean(config?.ghostwriter?.url)}
         />
       )}
       {activeView === 'tags' && (

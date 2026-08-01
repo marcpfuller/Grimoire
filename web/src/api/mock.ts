@@ -6,17 +6,17 @@ const MOCK_SESSIONS: Session[] = [
     id: 'pane-a1b2',
     name: 'pane-a1b2',
     commands: [
-      { id: 'abc0001', command: 'nmap -sC -sV 10.0.0.5', timestamp: '2h ago', duration: '45s', exitCode: 0, paneId: 'pane-a1b2' },
-      { id: 'abc0002', command: 'ffuf -w wordlist.txt -u http://10.0.0.5/FUZZ', timestamp: '1h ago', duration: '5m', exitCode: 1, paneId: 'pane-a1b2' },
-      { id: 'abc0003', command: 'cat /etc/passwd', timestamp: '30m ago', duration: '1s', exitCode: 0, paneId: 'pane-a1b2' },
+      { id: 'abc0001', command: 'nmap -sC -sV 10.0.0.5', timestamp: '2h ago', duration: '45s', exitCode: 0, paneId: 'pane-a1b2', syncedGW: true },
+      { id: 'abc0002', command: 'ffuf -w wordlist.txt -u http://10.0.0.5/FUZZ', timestamp: '1h ago', duration: '5m', exitCode: 1, paneId: 'pane-a1b2', syncedGW: false },
+      { id: 'abc0003', command: 'cat /etc/passwd', timestamp: '30m ago', duration: '1s', exitCode: 0, paneId: 'pane-a1b2', syncedGW: false },
     ],
   },
   {
     id: 'pane-c3d4',
     name: 'pane-c3d4',
     commands: [
-      { id: 'def0001', command: 'ssh user@192.168.1.10', timestamp: '1d ago', duration: '2h', exitCode: 0, paneId: 'pane-c3d4' },
-      { id: 'def0002', command: 'ls -la /var/www/html', timestamp: '1d ago', duration: '1s', exitCode: 0, paneId: 'pane-c3d4' },
+      { id: 'def0001', command: 'ssh user@192.168.1.10', timestamp: '1d ago', duration: '2h', exitCode: 0, paneId: 'pane-c3d4', syncedGW: true },
+      { id: 'def0002', command: 'ls -la /var/www/html', timestamp: '1d ago', duration: '1s', exitCode: 0, paneId: 'pane-c3d4', syncedGW: false },
     ],
   },
 ]

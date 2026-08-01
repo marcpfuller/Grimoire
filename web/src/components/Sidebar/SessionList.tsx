@@ -9,6 +9,7 @@ export interface SessionListProps {
   selectedCmdId: string
   setSelectedCmdId: (id: string) => void
   addToast: (toast: Omit<Toast, 'id'>) => void
+  gwConfigured: boolean
 }
 
 export function SessionList({
@@ -18,6 +19,7 @@ export function SessionList({
   selectedCmdId,
   setSelectedCmdId,
   addToast,
+  gwConfigured,
 }: SessionListProps) {
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
   const [exporting, setExporting] = useState(false)
@@ -87,7 +89,18 @@ export function SessionList({
                       />
                     </span>
                     {/* Code icon — hidden when checkbox is visible */}
-                    <span className={`material-symbols-outlined text-[14px] mr-2 text-vscode-accent shrink-0 ${isChecked ? 'hidden' : 'group-hover:hidden'}`}>code</span>
+                    <span className={`material-symbols-outlined text-[14px] mr-1 text-vscode-accent shrink-0 ${isChecked ? 'hidden' : 'group-hover:hidden'}`}>code</span>
+                    {/* Sync status dot — always visible when code icon is visible */}
+                    <span
+                      className={`shrink-0 w-2 h-2 rounded-full mr-1.5 ${isChecked ? 'hidden' : 'group-hover:hidden'} ${
+                        !gwConfigured
+                          ? 'bg-vscode-text-muted'
+                          : cmd.syncedGW
+                            ? 'bg-vscode-success'
+                            : 'bg-red-500'
+                      }`}
+                      title={!gwConfigured ? 'Ghostwriter not configured' : cmd.syncedGW ? 'Synced to Ghostwriter' : 'Not yet synced'}
+                    />
                     <span className="truncate font-code text-[12px] opacity-90">
                       {cmd.id}: {cmd.command.split(' ')[0]}
                     </span>

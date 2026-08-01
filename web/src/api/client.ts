@@ -43,7 +43,10 @@ export const RealAPI: ApiClient = {
   fetchTags: () =>
     fetch('/api/tags', { headers: authHeader() }).then(res => res.json() as Promise<Tag[]>),
   fetchOutput: commandId =>
-    fetch(`/api/commands/${commandId}/output`, { headers: authHeader() }).then(res => res.text()),
+    fetch(`/api/commands/${commandId}/output`, { headers: authHeader() }).then(res => {
+      if (!res.ok) throw new Error(`output fetch failed: ${res.status}`)
+      return res.text()
+    }),
   fetchCommandMetadata: commandId =>
     fetch(`/api/commands/${commandId}/metadata`, { headers: authHeader() }).then(
       res => res.json() as Promise<MetadataResponse>,

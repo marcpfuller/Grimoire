@@ -12,6 +12,7 @@ type CommandResponse struct {
 	Duration  string `json:"duration"`  // human-readable, e.g. "1.2s"
 	ExitCode  *int   `json:"exitCode"`
 	PaneID    string `json:"paneId"`
+	SyncedGW  bool   `json:"syncedGW"`
 }
 
 // SessionResponse groups commands under a named pane.
