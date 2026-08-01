@@ -4,6 +4,7 @@ import { getToken } from '../api/client'
 export type ServerEventType =
     | 'command_started'
     | 'command_finished'
+    | 'command_synced'
     | 'session_registered'
     | 'session_deregistered'
 
@@ -15,6 +16,7 @@ export interface ServerEvent {
 const EVENT_TYPES: ServerEventType[] = [
     'command_started',
     'command_finished',
+    'command_synced',
     'session_registered',
     'session_deregistered',
 ]

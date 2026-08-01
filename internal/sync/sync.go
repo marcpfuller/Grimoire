@@ -39,6 +39,9 @@ type Pusher interface {
 type Config struct {
 	// Interval between sync ticks. Defaults to 30 s when zero.
 	Interval time.Duration
+	// OnSynced is called after each command is successfully pushed and marked
+	// synced. The shortID of the synced command is passed. May be nil.
+	OnSynced func(shortID string)
 }
 
 // Syncer runs a background loop that pushes unsynced commands to Ghostwriter.
@@ -169,6 +172,8 @@ func (s *Syncer) syncBatch(ctx context.Context) {
 		}
 		if err := s.store.MarkCommandSynced(ctx, cmd.ID); err != nil {
 			s.logWarn("sync: MarkCommandSynced failed", "command_id", cmd.ID, "err", err)
+		} else if s.cfg.OnSynced != nil {
+			s.cfg.OnSynced(cmd.ShortID)
 		}
 	}
 }

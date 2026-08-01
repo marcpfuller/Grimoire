@@ -767,6 +767,7 @@ func commandToResponse(c *db.Command) CommandResponse {
 		Duration:  dur,
 		ExitCode:  c.ExitCode,
 		PaneID:    c.PaneID,
+		SyncedGW:  c.SyncedGW,
 	}
 }
 
