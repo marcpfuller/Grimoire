@@ -2,11 +2,13 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
@@ -16,9 +18,21 @@ import (
 	"github.com/marcpfuller/grimoire/internal/api"
 	"github.com/marcpfuller/grimoire/internal/db"
 	dbmocks "github.com/marcpfuller/grimoire/internal/db/mocks"
+	grimsync "github.com/marcpfuller/grimoire/internal/sync"
 )
 
 // --- test doubles ---
+
+// mockAPIPusher captures pushed commands for handleSync tests.
+type mockAPIPusher struct {
+	err    error
+	pushed []*db.Command
+}
+
+func (m *mockAPIPusher) PushCommand(_ context.Context, cmd *db.Command) error {
+	m.pushed = append(m.pushed, cmd)
+	return m.err
+}
 
 // --- helpers ---
 
@@ -363,10 +377,13 @@ func TestHandleRegister(t *testing.T) {
 			wantStatus: http.StatusBadRequest,
 		},
 		{
-			name:       "missing_project_id",
-			body:       map[string]any{"pane_id": "pane1"},
-			setupStore: func(_ *dbmocks.MockStore) {},
-			wantStatus: http.StatusBadRequest,
+			name: "missing_project_id",
+			body: map[string]any{"pane_id": "pane1"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.On("UpsertPane", mock.Anything, "pane1", "", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+					Return(nil).Once()
+			},
+			wantStatus: http.StatusNoContent,
 		},
 		{
 			name: "upsert_fails",
@@ -1117,4 +1134,49 @@ func TestHandleShutdown_no_handler_returns_503(t *testing.T) {
 	w := doRequest(t, srv, http.MethodPost, "/api/shutdown", nil)
 
 	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+// --------------------------------------------------
+// POST /api/sync
+// --------------------------------------------------
+
+func newSyncerForAPI(t *testing.T, store *dbmocks.MockStore, pusher grimsync.Pusher) *grimsync.Syncer {
+	t.Helper()
+	return grimsync.New(store, pusher, grimsync.Config{Interval: time.Second}, nil)
+}
+
+func TestHandleSync_project_override_pushes_with_override_id(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockAPIPusher{}
+	cmd := &db.Command{ID: 5, ShortID: "abc123", ProjectID: "", SyncedGW: false}
+
+	store.On("GetCommandByShortID", mock.Anything, "abc123").Return(cmd, nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(5)).Return(nil).Once()
+
+	srv := newServer(t, store, 0)
+	srv.SetRuntime(api.RuntimeConfig{Syncer: newSyncerForAPI(t, store, pusher)})
+
+	w := doRequest(t, srv, http.MethodPost, "/api/sync",
+		map[string]string{"short_id": "abc123", "project_id": "42"})
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, pusher.pushed, 1)
+	assert.Equal(t, "42", pusher.pushed[0].ProjectID, "override project ID must reach the pusher")
+}
+
+func TestHandleSync_no_project_id_returns_400(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockAPIPusher{}
+	cmd := &db.Command{ID: 6, ShortID: "noproject", ProjectID: "", SyncedGW: false}
+
+	store.On("GetCommandByShortID", mock.Anything, "noproject").Return(cmd, nil).Once()
+
+	srv := newServer(t, store, 0)
+	srv.SetRuntime(api.RuntimeConfig{Syncer: newSyncerForAPI(t, store, pusher)})
+
+	w := doRequest(t, srv, http.MethodPost, "/api/sync",
+		map[string]string{"short_id": "noproject"})
+
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.Empty(t, pusher.pushed, "nothing must be pushed when project ID is absent")
 }

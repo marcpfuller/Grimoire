@@ -219,8 +219,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if req.PaneID == "" || req.ProjectID == "" {
-		writeError(w, http.StatusBadRequest, "pane_id and project_id are required")
+	if req.PaneID == "" {
+		writeError(w, http.StatusBadRequest, "pane_id is required")
 		return
 	}
 	if req.Width <= 0 {
@@ -814,10 +814,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // handleSync handles POST /api/sync.
 // It pushes a single unsynced command to Ghostwriter immediately, regardless
 // of the auto_sync setting. The request body must be JSON with a "short_id"
-// field. Returns 404 if the command is not found, 409 if already synced.
+// field. An optional "project_id" field overrides the command's stored project
+// for this push only — it is not persisted. Returns 404 if the command is not
+// found, 409 if already synced, 400 if no project ID is available.
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ShortID string `json:"short_id"`
+		ShortID   string `json:"short_id"`
+		ProjectID string `json:"project_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -831,12 +834,22 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "sync not available")
 		return
 	}
-	if err := s.runtime.Syncer.PushOne(r.Context(), req.ShortID); err != nil {
+
+	var err error
+	if req.ProjectID != "" {
+		err = s.runtime.Syncer.PushOneWithProject(r.Context(), req.ShortID, req.ProjectID)
+	} else {
+		err = s.runtime.Syncer.PushOne(r.Context(), req.ShortID)
+	}
+	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "command not found: "+req.ShortID)
 			return
 		}
-		// "already synced" is a conflict, anything else is a server error.
+		if errors.Is(err, grimsync.ErrNoProjectID) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if strings.Contains(err.Error(), "already synced") {
 			writeError(w, http.StatusConflict, err.Error())
 			return
