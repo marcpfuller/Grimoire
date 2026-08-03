@@ -55,12 +55,13 @@ func newServer(t *testing.T, status int, body string) (*httptest.Server, *http.R
 
 const testToken = "gw_test_token_abc123" //nolint:gosec // test credential only
 
-// newTestClient creates a client pointing at url, pre-resolves the oplog ID
-// to 7 via SetOplogIDForTest, and is ready to call PushCommand without Init.
+// newTestClient creates a client pointing at url, pre-populates the oplog map
+// for finishedCmd's project (42→7) via SetOplogByProjectForTest, and is ready
+// to call PushCommand without Init.
 func newTestClient(t *testing.T, store db.Store, url string, hc *http.Client) *ghostwriter.Client {
 	t.Helper()
 	c := ghostwriter.NewWithHTTP(store, url, testToken, hc, nil)
-	ghostwriter.SetOplogIDForTest(c, 7)
+	ghostwriter.SetOplogByProjectForTest(c, 42, 7)
 	return c
 }
 
@@ -188,7 +189,7 @@ func TestPushCommand_NetworkError_ReturnsPlainError(t *testing.T) {
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return([]*db.OutputChunk{}, nil)
 
 	client := ghostwriter.NewWithHTTP(ms, "http://127.0.0.1:1", testToken, &http.Client{Timeout: 100 * time.Millisecond}, nil)
-	ghostwriter.SetOplogIDForTest(client, 7) // bypass Init; test only the push network error
+	ghostwriter.SetOplogByProjectForTest(client, 42, 7) // bypass Init; test only the push network error
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -201,7 +202,7 @@ func TestPushCommand_MissingToken_ReturnsErrorBeforeHTTP(t *testing.T) {
 	// GetOutputChunks must NOT be called if token is missing.
 
 	client := ghostwriter.NewWithHTTP(ms, "http://example.com", "", &http.Client{}, nil)
-	ghostwriter.SetOplogIDForTest(client, 1) // bypass Init; test only the token guard
+	ghostwriter.SetOplogByProjectForTest(client, 42, 1) // bypass Init; test only the token guard
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -210,7 +211,7 @@ func TestPushCommand_MissingToken_ReturnsErrorBeforeHTTP(t *testing.T) {
 
 func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
-	// Init never called → resolvedOplogID stays 0.
+	// Init never called → oplogByProject stays nil.
 
 	client := ghostwriter.NewWithHTTP(ms, "http://example.com", "gw_tok", &http.Client{}, nil)
 	err := client.PushCommand(context.Background(), finishedCmd)
@@ -219,9 +220,22 @@ func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
 	require.Contains(t, err.Error(), "Init")
 }
 
+func TestPushCommand_NoOplogForProject_ReturnsError(t *testing.T) {
+	ms := dbmocks.NewMockStore(t)
+	// Map has no entry for project 42 (finishedCmd.ProjectID).
+	client := ghostwriter.NewWithHTTP(ms, "http://example.com", "gw_tok", &http.Client{}, nil)
+	ghostwriter.SetOplogByProjectForTest(client, 99, 5) // different project
+
+	err := client.PushCommand(context.Background(), finishedCmd)
+
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "project 42")
+}
+
 // ---- Init / oplog discovery tests ----
 
-const discoverResponse = `{"data":{"oplog":[{"id":42}]}}`
+// discoverResponse is a single-oplog Init response: oplog 42 belongs to project 42.
+const discoverResponse = `{"data":{"oplog":[{"id":42,"projectId":42}]}}`
 
 func TestInit_HappyPath(t *testing.T) {
 	// Server handles both the discover query and the subsequent push.
@@ -273,16 +287,16 @@ func TestInit_NoOplog_ReturnsError(t *testing.T) {
 	require.Contains(t, err.Error(), "no accessible oplog")
 }
 
-func TestInit_MultipleOplogs_ReturnsError(t *testing.T) {
-	body := `{"data":{"oplog":[{"id":1},{"id":2}]}}`
+func TestInit_MultipleOplogs_BuildsMap(t *testing.T) {
+	// Two oplogs belonging to two different projects — Init must succeed and
+	// record both mappings.
+	body := `{"data":{"oplog":[{"id":10,"projectId":1},{"id":20,"projectId":2}]}}`
 	srv, _ := newServer(t, http.StatusOK, body)
 
 	ms := dbmocks.NewMockStore(t)
 	client := ghostwriter.NewWithHTTP(ms, srv.URL, "gw_tok", srv.Client(), nil)
 
-	err := client.Init(context.Background())
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "2 oplogs")
+	require.NoError(t, client.Init(context.Background()))
 }
 
 func TestInit_AuthError_ReturnsAuthError(t *testing.T) {

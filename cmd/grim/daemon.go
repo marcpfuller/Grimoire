@@ -122,20 +122,20 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	}
 
 	// --- Ghostwriter pusher ---
-	// Use the real client when URL and token are configured. The oplog is
-	// discovered automatically from the service token at startup via Init.
-	// Falls back to a no-op stub so the daemon can run without Ghostwriter
-	// credentials during development or testing.
+	// --- Ghostwriter pusher ---
 	var pusher grimsync.Pusher
 	gwURL := viper.GetString("ghostwriter.url")
 	gwToken := viper.GetString("ghostwriter.token")
 	if gwURL != "" && gwToken != "" {
 		client := ghostwriter.New(store, gwURL, gwToken, log)
 		if err := client.Init(ctx); err != nil {
-			return fmt.Errorf("ghostwriter init: %w", err)
+			log.Warn("ghostwriter pusher disabled — Init failed; sync unavailable until resolved",
+				"url", gwURL, "err", err)
+			pusher = &noopPusher{}
+		} else {
+			pusher = client
+			log.Info("ghostwriter pusher enabled", "url", gwURL)
 		}
-		pusher = client
-		log.Info("ghostwriter pusher enabled", "url", gwURL)
 	} else {
 		pusher = &noopPusher{}
 		log.Warn("ghostwriter pusher disabled — set ghostwriter.url and ghostwriter.token to enable sync")

@@ -387,27 +387,27 @@ func TestHandleRegister(t *testing.T) {
 		},
 		{
 			name: "upsert_fails",
-			body: map[string]any{"pane_id": "pane1", "project_id": "proj1"},
+			body: map[string]any{"pane_id": "pane1", "project_id": "1"},
 			setupStore: func(m *dbmocks.MockStore) {
-				m.On("UpsertPane", mock.Anything, "pane1", "proj1", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+				m.On("UpsertPane", mock.Anything, "pane1", "1", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
 					Return(errors.New("db error")).Once()
 			},
 			wantStatus: http.StatusInternalServerError,
 		},
 		{
 			name: "success",
-			body: map[string]any{"pane_id": "pane1", "project_id": "proj1"},
+			body: map[string]any{"pane_id": "pane1", "project_id": "1"},
 			setupStore: func(m *dbmocks.MockStore) {
-				m.On("UpsertPane", mock.Anything, "pane1", "proj1", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+				m.On("UpsertPane", mock.Anything, "pane1", "1", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
 					Return(nil).Once()
 			},
 			wantStatus: http.StatusNoContent,
 		},
 		{
 			name: "zero_dimensions_default_to_220x50",
-			body: map[string]any{"pane_id": "pane1", "project_id": "proj1", "width": 0, "height": 0},
+			body: map[string]any{"pane_id": "pane1", "project_id": "1", "width": 0, "height": 0},
 			setupStore: func(m *dbmocks.MockStore) {
-				m.On("UpsertPane", mock.Anything, "pane1", "proj1", mock.AnythingOfType("int64"), 220, 50).
+				m.On("UpsertPane", mock.Anything, "pane1", "1", mock.AnythingOfType("int64"), 220, 50).
 					Return(nil).Once()
 			},
 			wantStatus: http.StatusNoContent,
@@ -1180,3 +1180,19 @@ func TestHandleSync_no_project_id_returns_400(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, w.Code)
 	require.Empty(t, pusher.pushed, "nothing must be pushed when project ID is absent")
 }
+
+func TestHandleRegister_numeric_project_id_passes_through(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	store.On("UpsertPane", mock.Anything, "pane1", "42", mock.AnythingOfType("int64"),
+		mock.AnythingOfType("int"), mock.AnythingOfType("int")).Return(nil).Once()
+
+	srv := newServer(t, store, 0)
+	// No resolver needed for numeric IDs.
+
+	w := doRequest(t, srv, http.MethodPost, "/api/register",
+		map[string]any{"pane_id": "pane1", "project_id": "42"})
+
+	require.Equal(t, http.StatusNoContent, w.Code)
+}
+
+
