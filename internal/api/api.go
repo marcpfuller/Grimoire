@@ -12,10 +12,10 @@
 //	POST /api/tag                       grim tag attaches a label to a recorded command
 //	GET  /api/commands/{id}/metadata    fetch operator annotations for a command
 //	PATCH /api/commands/{id}/metadata   update operator annotations for a command
+//	GET  /api/oplogs                    list oplogs visible to configured Ghostwriter tokens
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +31,7 @@ import (
 	"github.com/marcpfuller/grimoire/internal/cast"
 	"github.com/marcpfuller/grimoire/internal/db"
 	"github.com/marcpfuller/grimoire/internal/events"
+	"github.com/marcpfuller/grimoire/internal/ghostwriter"
 	"github.com/marcpfuller/grimoire/internal/scrub"
 	grimsync "github.com/marcpfuller/grimoire/internal/sync"
 	"github.com/marcpfuller/grimoire/internal/util"
@@ -46,10 +47,9 @@ type RuntimeConfig struct {
 	// LevelVar controls the JSON log sink's minimum level at runtime.
 	LevelVar *slog.LevelVar
 
-	// NewPusher builds and initialises a Ghostwriter pusher for the given
-	// url/token pair. Returning a nil Pusher (or an error) prevents the swap.
-	// When url or token is empty it should return a no-op pusher, not an error.
-	NewPusher func(ctx context.Context, url, token string) (grimsync.Pusher, error)
+	// Oplogs returns the aggregated list of oplogs discovered across all Init'd
+	// Ghostwriter tokens. May be nil if Ghostwriter is not configured.
+	Oplogs func() []ghostwriter.OplogEntry
 
 	// Shutdown, when non-nil, is called by POST /api/shutdown to trigger a
 	// graceful daemon shutdown. Typically wired to the context cancel func.
@@ -106,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/commands/{id}/metadata", s.handlePatchMetadata)
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleUpdateConfig)
+	mux.HandleFunc("GET /api/oplogs", s.handleGetOplogs)
 	mux.HandleFunc("POST /api/cast", s.handleExportCast)
 	mux.HandleFunc("POST /api/sync", s.handleSync)
 	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
@@ -608,7 +609,7 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 // Keys not in this map are never read or written by the API — they can only be
 // changed by editing the config file directly.
 var writableConfig = map[string][]string{
-	"ghostwriter": {"url", "token", "auto_sync"},
+	"ghostwriter": {"url", "tokens", "auto_sync"},
 	"sync":        {"interval_seconds"},
 	"log":         {"level", "dir", "max_mb", "max_backups"},
 	"cast":        {"dir"},
@@ -637,6 +638,21 @@ func (s *Server) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, buildConfig())
 }
 
+// handleGetOplogs handles GET /api/oplogs.
+// Returns the aggregated oplog list from all Init'd Ghostwriter tokens.
+// Returns 503 if the Oplogs callback is not configured (Ghostwriter not set up).
+func (s *Server) handleGetOplogs(w http.ResponseWriter, r *http.Request) {
+	if s.runtime.Oplogs == nil {
+		writeError(w, http.StatusServiceUnavailable, "ghostwriter not configured")
+		return
+	}
+	oplogs := s.runtime.Oplogs()
+	if oplogs == nil {
+		oplogs = []ghostwriter.OplogEntry{}
+	}
+	writeJSON(w, http.StatusOK, oplogs)
+}
+
 // handleUpdateConfig handles POST /api/config.
 // Only keys listed in writableConfig are accepted; unknown groups/keys are silently ignored.
 // Changed keys take effect immediately: sync interval resets the ticker, log level
@@ -649,7 +665,6 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var changed []string
-	gwChanged := false
 
 	for group, allowedKeys := range writableConfig {
 		vals, ok := body[group]
@@ -697,22 +712,7 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				s.runtime.Syncer.SetAutoSync(enabled)
 				s.logInfo("config: auto_sync changed", "auto_sync", enabled)
 			}
-		case "ghostwriter.url", "ghostwriter.token":
-			gwChanged = true
 		}
-	}
-
-	if gwChanged && s.runtime.Syncer != nil && s.runtime.NewPusher != nil {
-		url := viper.GetString("ghostwriter.url")
-		tok := viper.GetString("ghostwriter.token")
-		pusher, err := s.runtime.NewPusher(r.Context(), url, tok)
-		if err != nil {
-			s.logWarn("config: ghostwriter pusher swap failed", "err", err)
-			writeError(w, http.StatusInternalServerError, "ghostwriter pusher init failed: "+err.Error())
-			return
-		}
-		s.runtime.Syncer.SetPusher(pusher)
-		s.logInfo("config: ghostwriter pusher swapped", "url", url)
 	}
 
 	if changed == nil {

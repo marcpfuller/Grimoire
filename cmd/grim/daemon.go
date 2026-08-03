@@ -122,23 +122,22 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	}
 
 	// --- Ghostwriter pusher ---
-	// --- Ghostwriter pusher ---
 	var pusher grimsync.Pusher
 	gwURL := viper.GetString("ghostwriter.url")
-	gwToken := viper.GetString("ghostwriter.token")
-	if gwURL != "" && gwToken != "" {
-		client := ghostwriter.New(store, gwURL, gwToken, log)
-		if err := client.Init(ctx); err != nil {
+	gwTokens := viper.GetStringSlice("ghostwriter.tokens")
+	multiClient := ghostwriter.NewMultiClient(store, gwURL, gwTokens, nil, log)
+	if gwURL != "" && len(gwTokens) > 0 {
+		if err := multiClient.Init(ctx); err != nil {
 			log.Warn("ghostwriter pusher disabled — Init failed; sync unavailable until resolved",
 				"url", gwURL, "err", err)
 			pusher = &noopPusher{}
 		} else {
-			pusher = client
-			log.Info("ghostwriter pusher enabled", "url", gwURL)
+			pusher = multiClient
+			log.Info("ghostwriter pusher enabled", "url", gwURL, "tokens", len(gwTokens))
 		}
 	} else {
 		pusher = &noopPusher{}
-		log.Warn("ghostwriter pusher disabled — set ghostwriter.url and ghostwriter.token to enable sync")
+		log.Warn("ghostwriter pusher disabled — set ghostwriter.url and ghostwriter.tokens to enable sync")
 	}
 
 	// --- sync loop ---
@@ -164,24 +163,13 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	srv.SetRuntime(api.RuntimeConfig{
 		Syncer:   syncer,
 		LevelVar: levelVar,
+		Oplogs:   multiClient.Oplogs,
 		Shutdown: func() {
 			cancel()
 			select {
 			case shutdownCh <- struct{}{}:
 			default:
 			}
-		},
-		NewPusher: func(ctx context.Context, url, token string) (grimsync.Pusher, error) {
-			if url == "" || token == "" {
-				log.Warn("ghostwriter pusher disabled — url or token is empty")
-				return &noopPusher{}, nil
-			}
-			client := ghostwriter.New(store, url, token, log)
-			if err := client.Init(ctx); err != nil {
-				return nil, fmt.Errorf("ghostwriter init: %w", err)
-			}
-			log.Info("ghostwriter pusher enabled", "url", url)
-			return client, nil
 		},
 	})
 

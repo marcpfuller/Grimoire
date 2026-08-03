@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/marcpfuller/grimoire/internal/db"
@@ -56,12 +57,12 @@ func newServer(t *testing.T, status int, body string) (*httptest.Server, *http.R
 const testToken = "gw_test_token_abc123" //nolint:gosec // test credential only
 
 // newTestClient creates a client pointing at url, pre-initializes the oplog
-// map (so oplogByProject != nil, satisfying the PushCommand Init guard), and
-// is ready to call PushCommand without a real Init round-trip.
+// list (so oplogs != nil, satisfying the PushCommand Init guard), and is ready
+// to call PushCommand without a real Init round-trip.
 func newTestClient(t *testing.T, store db.Store, url string, hc *http.Client) *ghostwriter.Client {
 	t.Helper()
 	c := ghostwriter.NewWithHTTP(store, url, testToken, hc, nil)
-	ghostwriter.SetOplogByProjectForTest(c, 42, 7) // initialize map only; routing uses cmd.OplogID
+	ghostwriter.SetOplogsForTest(c, []ghostwriter.OplogEntry{{ID: 7, ProjectID: 42, Name: "Test Oplog"}})
 	return c
 }
 
@@ -189,7 +190,7 @@ func TestPushCommand_NetworkError_ReturnsPlainError(t *testing.T) {
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return([]*db.OutputChunk{}, nil)
 
 	client := ghostwriter.NewWithHTTP(ms, "http://127.0.0.1:1", testToken, &http.Client{Timeout: 100 * time.Millisecond}, nil)
-	ghostwriter.SetOplogByProjectForTest(client, 42, 7) // bypass Init; test only the push network error
+	ghostwriter.SetOplogsForTest(client, []ghostwriter.OplogEntry{{ID: 7}}) // bypass Init; test only the push network error
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -202,7 +203,7 @@ func TestPushCommand_MissingToken_ReturnsErrorBeforeHTTP(t *testing.T) {
 	// GetOutputChunks must NOT be called if token is missing.
 
 	client := ghostwriter.NewWithHTTP(ms, "http://example.com", "", &http.Client{}, nil)
-	ghostwriter.SetOplogByProjectForTest(client, 42, 1) // bypass Init; test only the token guard
+	ghostwriter.SetOplogsForTest(client, []ghostwriter.OplogEntry{{ID: 1}}) // bypass Init; test only the token guard
 	err := client.PushCommand(context.Background(), finishedCmd)
 
 	require.Error(t, err)
@@ -211,7 +212,7 @@ func TestPushCommand_MissingToken_ReturnsErrorBeforeHTTP(t *testing.T) {
 
 func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
-	// Init never called → oplogByProject stays nil.
+	// Init never called → oplogs stays nil.
 
 	client := ghostwriter.NewWithHTTP(ms, "http://example.com", "gw_tok", &http.Client{}, nil)
 	err := client.PushCommand(context.Background(), finishedCmd)
@@ -223,7 +224,7 @@ func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
 func TestPushCommand_zero_oplog_id_returns_error(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	client := ghostwriter.NewWithHTTP(ms, "http://example.com", "gw_tok", &http.Client{}, nil)
-	ghostwriter.SetOplogByProjectForTest(client, 99, 5) // initialize map; routing now uses cmd.OplogID
+	ghostwriter.SetOplogsForTest(client, []ghostwriter.OplogEntry{{ID: 5}}) // initialize oplogs list
 
 	zeroCmd := *finishedCmd
 	zeroCmd.OplogID = 0
@@ -236,8 +237,8 @@ func TestPushCommand_zero_oplog_id_returns_error(t *testing.T) {
 
 // ---- Init / oplog discovery tests ----
 
-// discoverResponse is a single-oplog Init response: oplog 42 belongs to project 42.
-const discoverResponse = `{"data":{"oplog":[{"id":42,"projectId":42}]}}`
+// discoverResponse is a single-oplog Init response: oplog 42, name included.
+const discoverResponse = `{"data":{"oplog":[{"id":42,"projectId":42,"name":"BASILISK Oplog"}]}}`
 
 func TestInit_HappyPath(t *testing.T) {
 	// Server handles both the discover query and the subsequent push.
@@ -265,6 +266,14 @@ func TestInit_HappyPath(t *testing.T) {
 	client := ghostwriter.NewWithHTTP(ms, srv.URL, testToken, srv.Client(), nil)
 
 	require.NoError(t, client.Init(context.Background()))
+
+	// Verify the oplog list was populated with name.
+	oplogs := client.Oplogs()
+	require.Len(t, oplogs, 1)
+	assert.Equal(t, 42, oplogs[0].ID)
+	assert.Equal(t, "BASILISK Oplog", oplogs[0].Name)
+	assert.Equal(t, 42, oplogs[0].ProjectID)
+
 	require.NoError(t, client.PushCommand(context.Background(), finishedCmd))
 
 	// Verify cmd.OplogID (7) was used — PushCommand routes via cmd.OplogID directly,
@@ -290,16 +299,23 @@ func TestInit_NoOplog_ReturnsError(t *testing.T) {
 	require.Contains(t, err.Error(), "no accessible oplog")
 }
 
-func TestInit_MultipleOplogs_BuildsMap(t *testing.T) {
+func TestInit_MultipleOplogs_BuildsSlice(t *testing.T) {
 	// Two oplogs belonging to two different projects — Init must succeed and
-	// record both mappings.
-	body := `{"data":{"oplog":[{"id":10,"projectId":1},{"id":20,"projectId":2}]}}`
+	// record both in the oplogs slice.
+	body := `{"data":{"oplog":[{"id":10,"projectId":1,"name":"Op Alpha"},{"id":20,"projectId":2,"name":"Op Beta"}]}}`
 	srv, _ := newServer(t, http.StatusOK, body)
 
 	ms := dbmocks.NewMockStore(t)
 	client := ghostwriter.NewWithHTTP(ms, srv.URL, "gw_tok", srv.Client(), nil)
 
 	require.NoError(t, client.Init(context.Background()))
+
+	oplogs := client.Oplogs()
+	require.Len(t, oplogs, 2)
+	assert.Equal(t, 10, oplogs[0].ID)
+	assert.Equal(t, "Op Alpha", oplogs[0].Name)
+	assert.Equal(t, 20, oplogs[1].ID)
+	assert.Equal(t, "Op Beta", oplogs[1].Name)
 }
 
 func TestInit_AuthError_ReturnsAuthError(t *testing.T) {
@@ -428,3 +444,184 @@ func TestGraphqlEndpoint(t *testing.T) {
 
 func ptrInt64(v int64) *int64 { return &v }
 func ptrInt(v int) *int       { return &v }
+
+// ---- MultiClient tests ----
+
+func TestMultiClient_Init_SingleToken_Success(t *testing.T) {
+	srv, _ := newServer(t, http.StatusOK, discoverResponse)
+	ms := dbmocks.NewMockStore(t)
+
+	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{testToken}, srv.Client(), nil)
+	require.NoError(t, mc.Init(context.Background()))
+
+	oplogs := mc.Oplogs()
+	require.Len(t, oplogs, 1)
+	assert.Equal(t, 42, oplogs[0].ID)
+	assert.Equal(t, "BASILISK Oplog", oplogs[0].Name)
+}
+
+func TestMultiClient_Init_MultiToken_AggregatesOplogs(t *testing.T) {
+	responses := []string{
+		`{"data":{"oplog":[{"id":1,"projectId":10,"name":"Alpha Oplog"}]}}`,
+		`{"data":{"oplog":[{"id":2,"projectId":20,"name":"Beta Oplog"}]}}`,
+	}
+	callIdx := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(responses[callIdx%len(responses)]))
+		callIdx++
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{"tok1", "tok2"}, srv.Client(), nil)
+	require.NoError(t, mc.Init(context.Background()))
+
+	oplogs := mc.Oplogs()
+	require.Len(t, oplogs, 2)
+	ids := []int{oplogs[0].ID, oplogs[1].ID}
+	assert.Contains(t, ids, 1)
+	assert.Contains(t, ids, 2)
+}
+
+func TestMultiClient_Init_NoTokens_ReturnsError(t *testing.T) {
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, "http://example.com", []string{}, nil, nil)
+	err := mc.Init(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no tokens")
+}
+
+func TestMultiClient_Init_AllFail_ReturnsError(t *testing.T) {
+	srv, _ := newServer(t, http.StatusUnauthorized, `{"message":"Unauthorized"}`)
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{"bad1", "bad2"}, srv.Client(), nil)
+	err := mc.Init(context.Background())
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "all tokens failed")
+}
+
+func TestMultiClient_Init_PartialSuccess_ContinuesWithGoodTokens(t *testing.T) {
+	callIdx := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		callIdx++
+		if callIdx == 1 {
+			// First token fails auth.
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"Unauthorized"}`))
+			return
+		}
+		// Second token succeeds.
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(discoverResponse))
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{"bad_tok", "good_tok"}, srv.Client(), nil)
+	require.NoError(t, mc.Init(context.Background()), "partial failure should still succeed")
+
+	require.Len(t, mc.Oplogs(), 1)
+}
+
+func TestMultiClient_Init_DuplicateOplogID_FirstWins(t *testing.T) {
+	// Both tokens claim oplog 42 — the first token's client should own it.
+	srv, _ := newServer(t, http.StatusOK, discoverResponse) // always returns oplog 42
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{"tok1", "tok2"}, srv.Client(), nil)
+	require.NoError(t, mc.Init(context.Background()))
+
+	// Deduplicated: only one entry for oplog 42.
+	require.Len(t, mc.Oplogs(), 1)
+}
+
+func TestMultiClient_Init_Idempotent(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(discoverResponse))
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{testToken}, srv.Client(), nil)
+	require.NoError(t, mc.Init(context.Background()))
+	require.NoError(t, mc.Init(context.Background()))
+	assert.Equal(t, 1, callCount, "second Init must not make HTTP calls")
+}
+
+func TestMultiClient_PushCommand_RoutesToCorrectClient(t *testing.T) {
+	var capturedAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		// Distinguish Init (discover query) from push (mutation).
+		if len(body) < 200 && !contains(body, "GrimoireInsertOplogEntry") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(discoverResponse))
+			return
+		}
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validGQLResponse))
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	ms.On("GetOutputChunks", mock.Anything, finishedCmd.ID).Return(simpleChunks, nil)
+
+	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{"tok_for_oplog42"}, srv.Client(), nil)
+	require.NoError(t, mc.Init(context.Background()))
+
+	// finishedCmd.OplogID = 7, but the client owns oplog 42 (from discoverResponse).
+	// Use SetMultiClientForTest to wire oplog 7 → the client directly.
+	underlyingClient := ghostwriter.NewWithHTTP(ms, srv.URL, "tok_for_oplog7", srv.Client(), nil)
+	ghostwriter.SetOplogsForTest(underlyingClient, []ghostwriter.OplogEntry{{ID: 7}})
+	ghostwriter.SetMultiClientForTest(mc,
+		map[int]*ghostwriter.Client{7: underlyingClient},
+		[]ghostwriter.OplogEntry{{ID: 7, Name: "Oplog 7"}},
+	)
+
+	err := mc.PushCommand(context.Background(), finishedCmd)
+	require.NoError(t, err)
+	assert.Equal(t, "Bearer tok_for_oplog7", capturedAuth, "push must use the token that owns oplog 7")
+}
+
+func TestMultiClient_PushCommand_UnknownOplogID_ReturnsError(t *testing.T) {
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, "http://example.com", []string{testToken}, nil, nil)
+	ghostwriter.SetMultiClientForTest(mc,
+		map[int]*ghostwriter.Client{42: ghostwriter.NewWithHTTP(ms, "", "", nil, nil)},
+		[]ghostwriter.OplogEntry{{ID: 42}},
+	)
+
+	cmd := &db.Command{ID: 1, OplogID: 99} // oplog 99 not in routing table
+	err := mc.PushCommand(context.Background(), cmd)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no token owns oplog 99")
+}
+
+func TestMultiClient_PushCommand_NotInitialized_ReturnsError(t *testing.T) {
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, "http://example.com", []string{testToken}, nil, nil)
+	err := mc.PushCommand(context.Background(), finishedCmd)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "not initialized")
+}
+
+func contains(b []byte, s string) bool {
+	return len(b) > 0 && string(b) != "" && len(s) > 0 &&
+		(func() bool {
+			for i := range b {
+				if i+len(s) <= len(b) && string(b[i:i+len(s)]) == s {
+					return true
+				}
+			}
+			return false
+		})()
+}

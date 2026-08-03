@@ -18,6 +18,7 @@ import (
 	"github.com/marcpfuller/grimoire/internal/api"
 	"github.com/marcpfuller/grimoire/internal/db"
 	dbmocks "github.com/marcpfuller/grimoire/internal/db/mocks"
+	"github.com/marcpfuller/grimoire/internal/ghostwriter"
 	grimsync "github.com/marcpfuller/grimoire/internal/sync"
 )
 
@@ -845,7 +846,7 @@ func TestHandleGetOutput(t *testing.T) {
 
 func TestHandleGetConfig(t *testing.T) {
 	viper.Set("ghostwriter.url", "https://gw.example.com")
-	viper.Set("ghostwriter.token", "tok-abc123")
+	viper.Set("ghostwriter.tokens", []string{"tok-abc123", "tok-def456"})
 	viper.Set("sync.interval_seconds", 60)
 	viper.Set("log.level", "debug")
 
@@ -863,8 +864,10 @@ func TestHandleGetConfig(t *testing.T) {
 
 	// Spot-check that values reflect what was set in Viper.
 	assert.Equal(t, "https://gw.example.com", cfg["ghostwriter"]["url"])
-	assert.Equal(t, "tok-abc123", cfg["ghostwriter"]["token"])
 	assert.Equal(t, "debug", cfg["log"]["level"])
+
+	// token key must not be present (replaced by tokens).
+	assert.NotContains(t, cfg["ghostwriter"], "token")
 
 	// Non-whitelisted keys absent (db.path, server.host, etc.).
 	assert.NotContains(t, cfg, "db")
@@ -962,7 +965,7 @@ func TestHandleUpdateConfig(t *testing.T) {
 		{
 			name: "multiple_groups_updated_atomically",
 			body: map[string]any{
-				"ghostwriter": map[string]any{"url": "https://multi.example.com", "token": "tok-new"},
+				"ghostwriter": map[string]any{"url": "https://multi.example.com", "auto_sync": true},
 				"log":         map[string]any{"level": "warn"},
 			},
 			wantStatus: http.StatusOK,
@@ -973,7 +976,6 @@ func TestHandleUpdateConfig(t *testing.T) {
 				}
 				require.NoError(t, json.NewDecoder(w.Body).Decode(&result))
 				assert.Equal(t, "https://multi.example.com", result.Config["ghostwriter"]["url"])
-				assert.Equal(t, "tok-new", result.Config["ghostwriter"]["token"])
 				assert.Equal(t, "warn", result.Config["log"]["level"])
 			},
 		},
@@ -1192,4 +1194,57 @@ func TestHandleRegister_oplog_id_and_name_pass_through(t *testing.T) {
 		map[string]any{"pane_id": "pane1", "oplog_id": 42, "oplog_name": "BASILISK Oplog"})
 
 	require.Equal(t, http.StatusNoContent, w.Code)
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/oplogs
+// ---------------------------------------------------------------------------
+
+func TestHandleGetOplogs_OplogsCallbackNil_Returns503(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	srv := newServer(t, store, 0)
+	// No runtime set → Oplogs callback is nil.
+
+	w := doRequest(t, srv, http.MethodGet, "/api/oplogs", nil)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+func TestHandleGetOplogs_EmptyList_ReturnsEmptyArray(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	srv := newServer(t, store, 0)
+	srv.SetRuntime(api.RuntimeConfig{
+		Oplogs: func() []ghostwriter.OplogEntry { return nil },
+	})
+
+	w := doRequest(t, srv, http.MethodGet, "/api/oplogs", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var result []ghostwriter.OplogEntry
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&result))
+	assert.NotNil(t, result)
+	assert.Empty(t, result)
+}
+
+func TestHandleGetOplogs_ReturnsOplogs(t *testing.T) {
+	oplogs := []ghostwriter.OplogEntry{
+		{ID: 1, Name: "Alpha Oplog", ProjectID: 10},
+		{ID: 2, Name: "Beta Oplog", ProjectID: 20},
+	}
+	store := dbmocks.NewMockStore(t)
+	srv := newServer(t, store, 0)
+	srv.SetRuntime(api.RuntimeConfig{
+		Oplogs: func() []ghostwriter.OplogEntry { return oplogs },
+	})
+
+	w := doRequest(t, srv, http.MethodGet, "/api/oplogs", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var result []ghostwriter.OplogEntry
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&result))
+	require.Len(t, result, 2)
+	assert.Equal(t, 1, result[0].ID)
+	assert.Equal(t, "Alpha Oplog", result[0].Name)
+	assert.Equal(t, 10, result[0].ProjectID)
+	assert.Equal(t, 2, result[1].ID)
+	assert.Equal(t, "Beta Oplog", result[1].Name)
 }
