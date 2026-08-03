@@ -110,7 +110,8 @@ func runShell(cmd *cobra.Command, _ []string) error {
 	// --- shell hook auto-injection ---
 	// Build shell-specific args/env so the Grimoire hooks are sourced
 	// automatically without requiring operators to modify their rc files.
-	shellArgs, extraEnv, hookCleanup, err := buildShellInit(shellBin)
+	grimExe, _ := os.Executable()
+	shellArgs, extraEnv, hookCleanup, err := buildShellInit(shellBin, cmd.Root(), grimExe)
 	if err != nil {
 		log.Warn("grim shell: hook injection failed, continuing without capture hooks",
 			"shell", shellBin, "err", err)
@@ -177,7 +178,13 @@ func runShell(cmd *cobra.Command, _ []string) error {
 //   - bash: returns --init-file pointing to a temp file that sources ~/.bashrc
 //     then the Grimoire bash hook.
 //   - other shells: returns no-ops; operators must source hooks manually.
-func buildShellInit(shellBin string) (shellArgs, extraEnv []string, cleanup func(), err error) {
+//
+// root is the root cobra.Command; its completion script is appended to the
+// init content so Tab-completion for grim subcommands works inside the shell.
+// grimExe is the absolute path of the running binary; an extra completion
+// binding is registered for it so Tab works when invoked as /tmp/grim or a
+// full path, not just the bare `grim` word.
+func buildShellInit(shellBin string, root *cobra.Command, grimExe string) (shellArgs, extraEnv []string, cleanup func(), err error) {
 	base := strings.ToLower(filepath.Base(shellBin))
 	noop := func() {}
 
@@ -190,13 +197,30 @@ func buildShellInit(shellBin string) (shellArgs, extraEnv []string, cleanup func
 		cleanup = func() { _ = os.RemoveAll(zdotdir) }
 
 		// .zshrc: unset ZDOTDIR first so nested shells use the real one,
-		// then source the operator's real .zshrc, then inject Grimoire hooks.
+		// then source the operator's real .zshrc, then inject Grimoire hooks,
+		// then source the grim completion script.
+		var zshCompletion bytes.Buffer
+		if root != nil {
+			_ = root.GenZshCompletion(&zshCompletion)
+		}
+		// Bind completion to the binary's full path in addition to the bare
+		// command name so `Tab` works when the user invokes /path/to/grim.
+		var zshExtraBinding string
+		if grimExe != "" {
+			zshExtraBinding = fmt.Sprintf("compdef _grim %q\n", grimExe)
+		}
 		zshrc := fmt.Sprintf(
 			"unset ZDOTDIR\n"+
 				"[[ -f \"${HOME}/.zshrc\" ]] && source \"${HOME}/.zshrc\"\n"+
 				"# --- Grimoire hooks (auto-injected by grim shell) ---\n"+
-				"%s\n",
+				"%s\n"+
+				"# --- grim tab-completion ---\n"+
+				"autoload -Uz compinit && compinit -u 2>/dev/null\n"+
+				"%s\n"+
+				"%s",
 			zshHook,
+			zshCompletion.String(),
+			zshExtraBinding,
 		)
 		if e := os.WriteFile(filepath.Join(zdotdir, ".zshrc"), []byte(zshrc), 0o600); e != nil {
 			cleanup()
@@ -211,12 +235,28 @@ func buildShellInit(shellBin string) (shellArgs, extraEnv []string, cleanup func
 		}
 		cleanup = func() { _ = os.Remove(f.Name()) }
 
-		// init file: source the operator's real .bashrc then Grimoire hooks.
+		// init file: source the operator's real .bashrc, then Grimoire hooks,
+		// then source the grim completion script.
+		var bashCompletion bytes.Buffer
+		if root != nil {
+			_ = root.GenBashCompletionV2(&bashCompletion, false)
+		}
+		// Bind completion to the binary's full path in addition to the bare
+		// command name so `Tab` works when the user invokes /path/to/grim.
+		var bashExtraBinding string
+		if grimExe != "" {
+			bashExtraBinding = fmt.Sprintf("complete -o default -F __start_grim %q\n", grimExe)
+		}
 		content := fmt.Sprintf(
 			"[[ -f \"${HOME}/.bashrc\" ]] && source \"${HOME}/.bashrc\"\n"+
 				"# --- Grimoire hooks (auto-injected by grim shell) ---\n"+
-				"%s\n",
+				"%s\n"+
+				"# --- grim tab-completion ---\n"+
+				"%s\n"+
+				"%s",
 			bashHook,
+			bashCompletion.String(),
+			bashExtraBinding,
 		)
 		if _, e := f.WriteString(content); e != nil {
 			_ = f.Close()
