@@ -19,17 +19,17 @@ manually select which commands to send to the oplog.
 The command must exist and must not already be synced. Use 'grim history'
 or the web UI to find short IDs.
 
-If the shell session was started without --project, use --project here to
-supply a Ghostwriter project ID for this push. The ID is used once and is
-not persisted to the database.`,
+If the shell session was started without --oplog, use --oplog here to
+supply a numeric Ghostwriter oplog ID for this push. The ID is used once
+and is not persisted to the database.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		shortID := args[0]
-		projectID, _ := cmd.Flags().GetString("project")
+		oplogID, _ := cmd.Flags().GetInt("oplog")
 
-		body := map[string]string{"short_id": shortID}
-		if projectID != "" {
-			body["project_id"] = projectID
+		body := map[string]any{"short_id": shortID}
+		if oplogID != 0 {
+			body["oplog_id"] = oplogID
 		}
 
 		resp, err := apiPost("/api/sync", body)
@@ -59,5 +59,5 @@ not persisted to the database.`,
 }
 
 func init() {
-	syncCmd.Flags().String("project", "", "Ghostwriter project ID (one-time override; not persisted)")
+	syncCmd.Flags().Int("oplog", 0, "Ghostwriter oplog ID (one-time numeric override; not persisted)")
 }

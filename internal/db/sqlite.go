@@ -15,7 +15,8 @@ import (
 const schema = `
 CREATE TABLE IF NOT EXISTS panes (
     id         TEXT    PRIMARY KEY,
-    project_id TEXT    NOT NULL DEFAULT '',
+    oplog_id   INTEGER NOT NULL DEFAULT 0,
+    oplog_name TEXT    NOT NULL DEFAULT '',
     created_at INTEGER NOT NULL
 );
 
@@ -142,6 +143,9 @@ type migration struct {
 //	4: add command_metadata table for operator-supplied annotations.
 //	5: drop project_id column from commands (now derived via JOIN on panes).
 //	6: add prompt column to commands for hook-provided PS1 context text.
+//	7: add oplog_id column to panes (replaces project_id for GW routing).
+//	8: add oplog_name column to panes for oplog display name snapshot.
+//	9: drop project_id column from panes.
 var migrations = []migration{
 	{
 		version: 1,
@@ -176,6 +180,18 @@ var migrations = []migration{
 	{
 		version: 6,
 		fn:      addColumnIfMissing("commands", "prompt", "TEXT NOT NULL DEFAULT ''"),
+	},
+	{
+		version: 7,
+		fn:      addColumnIfMissing("panes", "oplog_id", "INTEGER NOT NULL DEFAULT 0"),
+	},
+	{
+		version: 8,
+		fn:      addColumnIfMissing("panes", "oplog_name", "TEXT NOT NULL DEFAULT ''"),
+	},
+	{
+		version: 9,
+		fn:      dropColumnIfPresent("panes", "project_id"),
 	},
 }
 
@@ -297,32 +313,31 @@ func applyMigrations(db *sql.DB) error {
 
 // --- Panes ---
 
-// UpsertPane registers paneID with its Ghostwriter projectID, or silently
-// succeeds if already registered. Safe to call on daemon restart when the
-// shell still holds its original GRIMOIRE_PANE_ID.
+// UpsertPane registers paneID with its Ghostwriter oplog ID and display name,
+// or silently succeeds if already registered. Safe to call on daemon restart
+// when the shell still holds its original GRIMOIRE_PANE_ID.
 //
-// INSERT OR IGNORE: if the pane is already registered (e.g. daemon restart),
-// the existing row — including its projectID — is preserved unchanged.
-// Project IDs are not expected to change mid-session.
-func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error {
+// INSERT OR IGNORE: if the pane is already registered the existing row is
+// preserved unchanged. Oplog context is not expected to change mid-session.
+func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO panes (id, project_id, created_at, width, height) VALUES (?, ?, ?, ?, ?)`,
-		paneID, projectID, createdAt, width, height,
+		`INSERT OR IGNORE INTO panes (id, oplog_id, oplog_name, created_at, width, height) VALUES (?, ?, ?, ?, ?, ?)`,
+		paneID, oplogID, oplogName, createdAt, width, height,
 	)
 	return err
 }
 
-func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error {
+func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO panes (id, project_id, created_at, width, height) VALUES (?, ?, ?, ?, ?)`,
-		paneID, projectID, createdAt, width, height,
+		`INSERT INTO panes (id, oplog_id, oplog_name, created_at, width, height) VALUES (?, ?, ?, ?, ?, ?)`,
+		paneID, oplogID, oplogName, createdAt, width, height,
 	)
 	return err
 }
 
 func (s *sqliteStore) ListPanes(ctx context.Context) (panes []*Pane, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT id, project_id, created_at, width, height FROM panes ORDER BY created_at DESC`,
+		`SELECT id, oplog_id, oplog_name, created_at, width, height FROM panes ORDER BY created_at DESC`,
 	)
 	if qErr != nil {
 		return nil, qErr
@@ -335,7 +350,7 @@ func (s *sqliteStore) ListPanes(ctx context.Context) (panes []*Pane, err error) 
 
 	for rows.Next() {
 		p := &Pane{}
-		if err = rows.Scan(&p.ID, &p.ProjectID, &p.CreatedAt, &p.Width, &p.Height); err != nil {
+		if err = rows.Scan(&p.ID, &p.OplogID, &p.OplogName, &p.CreatedAt, &p.Width, &p.Height); err != nil {
 			return nil, err
 		}
 		panes = append(panes, p)
@@ -347,9 +362,9 @@ func (s *sqliteStore) ListPanes(ctx context.Context) (panes []*Pane, err error) 
 func (s *sqliteStore) GetPane(ctx context.Context, paneID string) (*Pane, error) {
 	p := &Pane{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, project_id, created_at, width, height FROM panes WHERE id = ?`,
+		`SELECT id, oplog_id, oplog_name, created_at, width, height FROM panes WHERE id = ?`,
 		paneID,
-	).Scan(&p.ID, &p.ProjectID, &p.CreatedAt, &p.Width, &p.Height)
+	).Scan(&p.ID, &p.OplogID, &p.OplogName, &p.CreatedAt, &p.Width, &p.Height)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -462,13 +477,14 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 		return fmt.Errorf("db: delete reservation: %w", err)
 	}
 
-	// Fetch project_id from the owning pane to populate the in-memory struct
-	// (not stored in the commands table — derived via JOIN at read time).
-	var projectID string
+	// Fetch oplog_id and oplog_name from the owning pane to populate the
+	// in-memory struct (not stored in commands — derived via JOIN at read time).
+	var oplogID int
+	var oplogName string
 	if err = tx.QueryRowContext(ctx,
-		`SELECT project_id FROM panes WHERE id = ?`, cmd.PaneID,
-	).Scan(&projectID); err != nil {
-		return fmt.Errorf("db: get pane project_id: %w", err)
+		`SELECT oplog_id, oplog_name FROM panes WHERE id = ?`, cmd.PaneID,
+	).Scan(&oplogID, &oplogName); err != nil {
+		return fmt.Errorf("db: get pane oplog: %w", err)
 	}
 
 	var seq int64
@@ -490,7 +506,8 @@ func (s *sqliteStore) CreateCommand(ctx context.Context, cmd *Command) error {
 	cmd.ID, _ = res.LastInsertId()
 	cmd.Seq = seq
 	cmd.ShortID = shortID
-	cmd.ProjectID = projectID // derived from pane, not stored
+	cmd.OplogID = oplogID     // derived from pane, not stored in commands
+	cmd.OplogName = oplogName // derived from pane, not stored in commands
 
 	return tx.Commit()
 }
@@ -499,12 +516,12 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 	cmd := &Command{}
 	var syncedGW int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command, c.prompt,
+		`SELECT c.id, c.short_id, c.pane_id, p.oplog_id, p.oplog_name, c.seq, c.command, c.prompt,
 		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.short_id = ?`,
 		shortID,
-	).Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.ProjectID, &cmd.Seq, &cmd.Command, &cmd.Prompt,
+	).Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.OplogID, &cmd.OplogName, &cmd.Seq, &cmd.Command, &cmd.Prompt,
 		&cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -518,7 +535,7 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 
 func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command, c.prompt,
+		`SELECT c.id, c.short_id, c.pane_id, p.oplog_id, p.oplog_name, c.seq, c.command, c.prompt,
 		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.pane_id = ? ORDER BY c.seq`,
@@ -538,7 +555,7 @@ func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cm
 
 func (s *sqliteStore) GetCommandsByPaneSeqRange(ctx context.Context, paneID string, firstSeq, lastSeq int64) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command, c.prompt,
+		`SELECT c.id, c.short_id, c.pane_id, p.oplog_id, p.oplog_name, c.seq, c.command, c.prompt,
 		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.pane_id = ? AND c.seq >= ? AND c.seq <= ? ORDER BY c.seq`,
@@ -558,7 +575,7 @@ func (s *sqliteStore) GetCommandsByPaneSeqRange(ctx context.Context, paneID stri
 
 func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.project_id, c.seq, c.command, c.prompt,
+		`SELECT c.id, c.short_id, c.pane_id, p.oplog_id, p.oplog_name, c.seq, c.command, c.prompt,
 		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.synced_gw = 0 AND c.ended_at IS NOT NULL ORDER BY c.id`,
@@ -804,7 +821,7 @@ func scanCommands(rows *sql.Rows) ([]*Command, error) {
 	for rows.Next() {
 		cmd := &Command{}
 		var syncedGW int64
-		if err := rows.Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.ProjectID, &cmd.Seq,
+		if err := rows.Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.OplogID, &cmd.OplogName, &cmd.Seq,
 			&cmd.Command, &cmd.Prompt, &cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW); err != nil {
 			return nil, err
 		}

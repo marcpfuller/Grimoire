@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -39,15 +40,25 @@ var shellCmd = &cobra.Command{
 }
 
 func init() {
-	shellCmd.Flags().String("project", "", "Ghostwriter project ID or codename (optional; commands captured locally when omitted)")
-	_ = shellCmd.RegisterFlagCompletionFunc("project", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		// Suppress file completion — project values are free-form IDs or codenames.
+	shellCmd.Flags().String("oplog", "", "Ghostwriter oplog ID (numeric) or name; commands are captured locally when omitted")
+	_ = shellCmd.RegisterFlagCompletionFunc("oplog", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		// Suppress file completion — oplog values are free-form names or numeric IDs.
 		return nil, cobra.ShellCompDirectiveNoFileComp
 	})
 }
 
 func runShell(cmd *cobra.Command, _ []string) error {
-	projectID, _ := cmd.Flags().GetString("project")
+	oplogArg, _ := cmd.Flags().GetString("oplog")
+	// Accept either a numeric oplog ID or a display name. Numeric IDs enable
+	// sync immediately; names are stored as oplog_name and will be resolved by
+	// the interactive selector in a future release.
+	var oplogID int
+	var oplogName string
+	if n, err := strconv.Atoi(oplogArg); err == nil && n > 0 {
+		oplogID = n
+	} else {
+		oplogName = oplogArg
+	}
 
 	daemonAddr := fmt.Sprintf("http://%s:%d",
 		viper.GetString("server.host"),
@@ -97,7 +108,7 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		// (e.g. testing or piped input).
 		width, height = 220, 50
 	}
-	if err := registerPane(daemonAddr, paneID, projectID, token, width, height); err != nil {
+	if err := registerPane(daemonAddr, paneID, oplogID, oplogName, token, width, height); err != nil {
 		return fmt.Errorf("register pane: %w", err)
 	}
 
@@ -156,7 +167,8 @@ func runShell(cmd *cobra.Command, _ []string) error {
 
 	log.Info("grim shell started",
 		"pane_id", paneID,
-		"project_id", projectID,
+		"oplog_id", oplogID,
+		"oplog_name", oplogName,
 		"daemon", daemonAddr,
 		"shell", shellBin,
 	)
@@ -320,10 +332,11 @@ func watchDaemon(ctx context.Context, addr, token string) {
 }
 
 // registerPane calls POST /api/register on the daemon.
-func registerPane(addr, paneID, projectID, token string, width, height int) error {
+func registerPane(addr, paneID string, oplogID int, oplogName, token string, width, height int) error {
 	body, _ := json.Marshal(map[string]any{
 		"pane_id":    paneID,
-		"project_id": projectID,
+		"oplog_id":   oplogID,
+		"oplog_name": oplogName,
 		"width":      width,
 		"height":     height,
 	})

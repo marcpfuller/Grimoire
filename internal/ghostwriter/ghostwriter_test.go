@@ -23,7 +23,7 @@ var finishedCmd = &db.Command{
 	ID:        1,
 	ShortID:   "a1b2c3d",
 	PaneID:    "pane-01",
-	ProjectID: "42",
+	OplogID:   7,
 	Command:   "ls -la /tmp",
 	StartedAt: time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC).UnixMilli(),
 	EndedAt:   ptrInt64(time.Date(2026, 7, 24, 12, 0, 1, 0, time.UTC).UnixMilli()),
@@ -55,13 +55,13 @@ func newServer(t *testing.T, status int, body string) (*httptest.Server, *http.R
 
 const testToken = "gw_test_token_abc123" //nolint:gosec // test credential only
 
-// newTestClient creates a client pointing at url, pre-populates the oplog map
-// for finishedCmd's project (42→7) via SetOplogByProjectForTest, and is ready
-// to call PushCommand without Init.
+// newTestClient creates a client pointing at url, pre-initializes the oplog
+// map (so oplogByProject != nil, satisfying the PushCommand Init guard), and
+// is ready to call PushCommand without a real Init round-trip.
 func newTestClient(t *testing.T, store db.Store, url string, hc *http.Client) *ghostwriter.Client {
 	t.Helper()
 	c := ghostwriter.NewWithHTTP(store, url, testToken, hc, nil)
-	ghostwriter.SetOplogByProjectForTest(c, 42, 7)
+	ghostwriter.SetOplogByProjectForTest(c, 42, 7) // initialize map only; routing uses cmd.OplogID
 	return c
 }
 
@@ -220,16 +220,18 @@ func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
 	require.Contains(t, err.Error(), "Init")
 }
 
-func TestPushCommand_NoOplogForProject_ReturnsError(t *testing.T) {
+func TestPushCommand_zero_oplog_id_returns_error(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
-	// Map has no entry for project 42 (finishedCmd.ProjectID).
 	client := ghostwriter.NewWithHTTP(ms, "http://example.com", "gw_tok", &http.Client{}, nil)
-	ghostwriter.SetOplogByProjectForTest(client, 99, 5) // different project
+	ghostwriter.SetOplogByProjectForTest(client, 99, 5) // initialize map; routing now uses cmd.OplogID
 
-	err := client.PushCommand(context.Background(), finishedCmd)
+	zeroCmd := *finishedCmd
+	zeroCmd.OplogID = 0
+
+	err := client.PushCommand(context.Background(), &zeroCmd)
 
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "project 42")
+	require.Contains(t, err.Error(), "no oplog ID")
 }
 
 // ---- Init / oplog discovery tests ----
@@ -265,14 +267,15 @@ func TestInit_HappyPath(t *testing.T) {
 	require.NoError(t, client.Init(context.Background()))
 	require.NoError(t, client.PushCommand(context.Background(), finishedCmd))
 
-	// Verify the discovered oplog_id (42) was used in the mutation.
+	// Verify cmd.OplogID (7) was used — PushCommand routes via cmd.OplogID directly,
+	// not via the Init-discovered map.
 	var payload struct {
 		Variables struct {
 			OplogID int `json:"oplog_id"`
 		} `json:"variables"`
 	}
 	require.NoError(t, json.Unmarshal(capturedBody, &payload))
-	require.Equal(t, 42, payload.Variables.OplogID, "Init should have discovered oplog_id=42")
+	require.Equal(t, finishedCmd.OplogID, payload.Variables.OplogID, "PushCommand must use cmd.OplogID for routing")
 }
 
 func TestInit_NoOplog_ReturnsError(t *testing.T) {

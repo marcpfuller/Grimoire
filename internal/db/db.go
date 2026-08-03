@@ -15,7 +15,8 @@ var (
 // Pane represents a terminal pane session anchored by GRIMOIRE_PANE_ID.
 type Pane struct {
 	ID        string
-	ProjectID string // Ghostwriter project ID this pane belongs to
+	OplogID   int    // Ghostwriter oplog ID this pane writes to (0 = unset)
+	OplogName string // oplog display name, snapshot at registration time
 	CreatedAt int64  // Unix ms
 	Width     int    // terminal columns at session start
 	Height    int    // terminal rows at session start
@@ -26,7 +27,8 @@ type Command struct {
 	ID        int64
 	ShortID   string // 7-hex operator tag, e.g. "a1b2c3d"
 	PaneID    string
-	ProjectID string // Ghostwriter project ID, derived via JOIN on panes at read time
+	OplogID   int    // Ghostwriter oplog ID, derived via JOIN on panes at read time
+	OplogName string // oplog display name, derived via JOIN on panes at read time
 	Seq       int64  // sequential position within the pane
 	Command   string
 	Prompt    string // shell prompt text sent by the preexec hook (e.g. "user@host:~/dir$ ")
@@ -83,12 +85,12 @@ type CommandMetadata struct {
 // through this interface so implementations can be swapped or mocked in tests.
 type Store interface {
 	// Panes
-	// UpsertPane registers paneID with its Ghostwriter projectID, or silently
-	// succeeds if already registered. This makes re-registration safe when the
-	// daemon restarts mid-session and the shell still holds its original
-	// GRIMOIRE_PANE_ID.
-	UpsertPane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error
-	CreatePane(ctx context.Context, paneID string, projectID string, createdAt int64, width, height int) error
+	// UpsertPane registers paneID with its Ghostwriter oplog ID and name, or
+	// silently succeeds if already registered. This makes re-registration safe
+	// when the daemon restarts mid-session and the shell still holds its
+	// original GRIMOIRE_PANE_ID.
+	UpsertPane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error
+	CreatePane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error
 	GetPane(ctx context.Context, paneID string) (*Pane, error)
 	ListPanes(ctx context.Context) ([]*Pane, error)
 	// DeregisterPane removes the pending short ID reservation for paneID so
