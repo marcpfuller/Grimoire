@@ -121,7 +121,8 @@ type nextIDResponse struct {
 
 type registerRequest struct {
 	PaneID    string `json:"pane_id"`
-	ProjectID string `json:"project_id"`
+	OplogID   int    `json:"oplog_id"`
+	OplogName string `json:"oplog_name"`
 	Width     int    `json:"width"`
 	Height    int    `json:"height"`
 }
@@ -230,14 +231,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.Height <= 0 {
 		req.Height = 50
 	}
-	if err := s.store.UpsertPane(r.Context(), req.PaneID, req.ProjectID, time.Now().UnixMilli(), req.Width, req.Height); err != nil {
+	if err := s.store.UpsertPane(r.Context(), req.PaneID, req.OplogID, req.OplogName, time.Now().UnixMilli(), req.Width, req.Height); err != nil {
 		s.logWarn("register: UpsertPane failed", "pane_id", req.PaneID, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to register pane")
 		return
 	}
 	s.broadcast(events.Event{
 		Type: "session_registered",
-		Data: map[string]any{"pane_id": req.PaneID, "project_id": req.ProjectID},
+		Data: map[string]any{"pane_id": req.PaneID, "oplog_id": req.OplogID, "oplog_name": req.OplogName},
 	})
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -815,13 +816,13 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 // handleSync handles POST /api/sync.
 // It pushes a single unsynced command to Ghostwriter immediately, regardless
 // of the auto_sync setting. The request body must be JSON with a "short_id"
-// field. An optional "project_id" field overrides the command's stored project
+// field. An optional "oplog_id" field overrides the command's stored oplog ID
 // for this push only — it is not persisted. Returns 404 if the command is not
-// found, 409 if already synced, 400 if no project ID is available.
+// found, 409 if already synced, 400 if no oplog ID is available.
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ShortID   string `json:"short_id"`
-		ProjectID string `json:"project_id"`
+		ShortID string `json:"short_id"`
+		OplogID int    `json:"oplog_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
@@ -837,8 +838,8 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var err error
-	if req.ProjectID != "" {
-		err = s.runtime.Syncer.PushOneWithProject(r.Context(), req.ShortID, req.ProjectID)
+	if req.OplogID != 0 {
+		err = s.runtime.Syncer.PushOneWithOplog(r.Context(), req.ShortID, req.OplogID)
 	} else {
 		err = s.runtime.Syncer.PushOne(r.Context(), req.ShortID)
 	}
@@ -847,7 +848,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "command not found: "+req.ShortID)
 			return
 		}
-		if errors.Is(err, grimsync.ErrNoProjectID) {
+		if errors.Is(err, grimsync.ErrNoOplogID) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}

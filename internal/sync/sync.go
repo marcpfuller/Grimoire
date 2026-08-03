@@ -13,9 +13,9 @@ import (
 	"github.com/marcpfuller/grimoire/internal/db"
 )
 
-// ErrNoProjectID is returned by PushOne and PushOneWithProject when the
-// command has no associated project ID and no override was provided.
-var ErrNoProjectID = errors.New("sync: command has no project ID; use --project to specify one")
+// ErrNoOplogID is returned by PushOne and PushOneWithOplog when the
+// command has no associated oplog ID and no override was provided.
+var ErrNoOplogID = errors.New("sync: command has no oplog ID; start shell with --oplog to select one")
 
 // AuthError indicates an authentication or configuration problem that requires
 // operator intervention (e.g. invalid or expired service token, wrong URL).
@@ -186,15 +186,15 @@ func (s *Syncer) syncBatch(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if cmd.ProjectID == "" {
-			s.logInfo("sync: skipping command with no project ID", "short_id", cmd.ShortID)
+		if cmd.OplogID == 0 {
+			s.logInfo("sync: skipping command with no oplog ID", "short_id", cmd.ShortID)
 			continue
 		}
 		if err := pusher.PushCommand(ctx, cmd); err != nil {
 			var authErr *AuthError
 			if errors.As(err, &authErr) {
 				s.logError("sync: push failed — fix token/config",
-					"command_id", cmd.ID, "project_id", cmd.ProjectID, "err", err)
+					"command_id", cmd.ID, "oplog_id", cmd.OplogID, "err", err)
 			} else {
 				s.logWarn("sync: push failed, will retry",
 					"command_id", cmd.ID, "err", err)
@@ -230,18 +230,18 @@ func (s *Syncer) logError(msg string, args ...any) {
 // PushOne looks up the command identified by shortID and pushes it to
 // Ghostwriter immediately, regardless of the AutoSync setting. It is an
 // error if the command does not exist, has already been synced, or has no
-// project ID. Use PushOneWithProject to supply a project ID at push time.
+// oplog ID. Use PushOneWithOplog to supply an oplog ID at push time.
 func (s *Syncer) PushOne(ctx context.Context, shortID string) error {
-	return s.pushOne(ctx, shortID, "")
+	return s.pushOne(ctx, shortID, 0)
 }
 
-// PushOneWithProject is like PushOne but overrides the command's project ID
-// for this push only — the DB is not updated. projectID must be non-empty.
-func (s *Syncer) PushOneWithProject(ctx context.Context, shortID, projectID string) error {
-	return s.pushOne(ctx, shortID, projectID)
+// PushOneWithOplog is like PushOne but overrides the command's oplog ID for
+// this push only — the DB is not updated. oplogID must be non-zero.
+func (s *Syncer) PushOneWithOplog(ctx context.Context, shortID string, oplogID int) error {
+	return s.pushOne(ctx, shortID, oplogID)
 }
 
-func (s *Syncer) pushOne(ctx context.Context, shortID, projectOverride string) error {
+func (s *Syncer) pushOne(ctx context.Context, shortID string, oplogOverride int) error {
 	cmd, err := s.store.GetCommandByShortID(ctx, shortID)
 	if err != nil {
 		return fmt.Errorf("sync: command %q not found: %w", shortID, err)
@@ -250,12 +250,12 @@ func (s *Syncer) pushOne(ctx context.Context, shortID, projectOverride string) e
 		return fmt.Errorf("sync: command %q is already synced to Ghostwriter", shortID)
 	}
 
-	effectiveProjectID := cmd.ProjectID
-	if projectOverride != "" {
-		effectiveProjectID = projectOverride
+	effectiveOplogID := cmd.OplogID
+	if oplogOverride != 0 {
+		effectiveOplogID = oplogOverride
 	}
-	if effectiveProjectID == "" {
-		return ErrNoProjectID
+	if effectiveOplogID == 0 {
+		return ErrNoOplogID
 	}
 
 	s.mu.RLock()
@@ -264,7 +264,7 @@ func (s *Syncer) pushOne(ctx context.Context, shortID, projectOverride string) e
 
 	// Use a shallow copy so the DB record is not mutated when an override is set.
 	pushCmd := *cmd
-	pushCmd.ProjectID = effectiveProjectID
+	pushCmd.OplogID = effectiveOplogID
 
 	if err := pusher.PushCommand(ctx, &pushCmd); err != nil {
 		return fmt.Errorf("sync: push %q: %w", shortID, err)

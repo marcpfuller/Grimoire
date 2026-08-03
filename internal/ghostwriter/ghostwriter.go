@@ -17,7 +17,6 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -180,15 +179,10 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 	if c.oplogByProject == nil {
 		return fmt.Errorf("ghostwriter: oplog map not initialized; call Init before pushing")
 	}
-
-	projectID, parseErr := strconv.Atoi(cmd.ProjectID)
-	if parseErr != nil || projectID <= 0 {
-		return fmt.Errorf("ghostwriter: command has invalid project ID %q", cmd.ProjectID)
+	if cmd.OplogID == 0 {
+		return fmt.Errorf("ghostwriter: command has no oplog ID; register pane with --oplog before pushing")
 	}
-	oplogID, ok := c.oplogByProject[projectID]
-	if !ok {
-		return fmt.Errorf("ghostwriter: no oplog mapped for project %d; token may not have OPLOG_RW access to this project", projectID)
-	}
+	oplogID := cmd.OplogID
 
 	// --- Assemble output ---
 	chunks, err := c.store.GetOutputChunks(ctx, cmd.ID)

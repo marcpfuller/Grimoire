@@ -68,7 +68,7 @@ func TestSynthesizeHappyPath(t *testing.T) {
 
 	cmd1 := &db.Command{ID: 1, ShortID: "abc0001", PaneID: "pane-1", Seq: 1, Command: "ls", StartedAt: 1000}
 	cmd2 := &db.Command{ID: 2, ShortID: "abc0002", PaneID: "pane-1", Seq: 2, Command: "pwd", StartedAt: 3500}
-	pane := &db.Pane{ID: "pane-1", ProjectID: "proj-1", Width: 200, Height: 50}
+	pane := &db.Pane{ID: "pane-1", OplogID: 1, OplogName: "proj-1 Oplog", Width: 200, Height: 50}
 	chunks1 := []*db.OutputChunk{
 		{CommandID: 1, Data: []byte("file1.txt\n"), OffsetMs: 100},
 		{CommandID: 1, Data: []byte("file2.txt\n"), OffsetMs: 200},
