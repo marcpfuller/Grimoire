@@ -403,7 +403,7 @@ func TestSyncer_SetAutoSync_enables_batch(t *testing.T) {
 func TestSyncer_PushOne_success(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 	pusher := &mockPusher{}
-	cmd := &db.Command{ID: 5, ShortID: "abc1234", SyncedGW: false}
+	cmd := &db.Command{ID: 5, ShortID: "abc1234", SyncedGW: false, ProjectID: "proj1"}
 
 	store.On("GetCommandByShortID", mock.Anything, "abc1234").Return(cmd, nil).Once()
 	store.On("MarkCommandSynced", mock.Anything, int64(5)).Return(nil).Once()
@@ -449,7 +449,7 @@ func TestSyncer_PushOne_not_found_returns_error(t *testing.T) {
 func TestSyncer_PushOne_push_failure_returns_error(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 	pusher := &mockPusher{err: errors.New("network error")}
-	cmd := &db.Command{ID: 7, ShortID: "abc5678", SyncedGW: false}
+	cmd := &db.Command{ID: 7, ShortID: "abc5678", SyncedGW: false, ProjectID: "proj1"}
 
 	store.On("GetCommandByShortID", mock.Anything, "abc5678").Return(cmd, nil).Once()
 
@@ -463,7 +463,7 @@ func TestSyncer_PushOne_push_failure_returns_error(t *testing.T) {
 func TestSyncer_PushOne_calls_OnSynced(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 	pusher := &mockPusher{}
-	cmd := &db.Command{ID: 9, ShortID: "def9999", SyncedGW: false}
+	cmd := &db.Command{ID: 9, ShortID: "def9999", SyncedGW: false, ProjectID: "proj1"}
 
 	store.On("GetCommandByShortID", mock.Anything, "def9999").Return(cmd, nil).Once()
 	store.On("MarkCommandSynced", mock.Anything, int64(9)).Return(nil).Once()
@@ -476,4 +476,69 @@ func TestSyncer_PushOne_calls_OnSynced(t *testing.T) {
 
 	require.NoError(t, s.PushOne(context.Background(), "def9999"))
 	assert.Equal(t, []string{"def9999"}, synced)
+}
+
+func TestSyncer_PushOne_no_project_id_returns_error(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+	cmd := &db.Command{ID: 3, ShortID: "noproj1", SyncedGW: false, ProjectID: ""}
+
+	store.On("GetCommandByShortID", mock.Anything, "noproj1").Return(cmd, nil).Once()
+
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Second}, nil)
+
+	err := s.PushOne(context.Background(), "noproj1")
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, grimsync.ErrNoProjectID)
+	require.Empty(t, pusher.pushed, "must not push command with no project ID")
+}
+
+func TestSyncer_PushOneWithProject_success(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+	cmd := &db.Command{ID: 11, ShortID: "noproj2", SyncedGW: false, ProjectID: ""}
+
+	store.On("GetCommandByShortID", mock.Anything, "noproj2").Return(cmd, nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(11)).Return(nil).Once()
+
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Second}, nil)
+
+	err := s.PushOneWithProject(context.Background(), "noproj2", "42")
+
+	require.NoError(t, err)
+	require.Len(t, pusher.pushed, 1)
+	assert.Equal(t, "42", pusher.pushed[0].ProjectID, "override project must be passed to pusher")
+}
+
+func TestSyncer_PushOneWithProject_empty_override_returns_error(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+	cmd := &db.Command{ID: 12, ShortID: "noproj3", SyncedGW: false, ProjectID: ""}
+
+	store.On("GetCommandByShortID", mock.Anything, "noproj3").Return(cmd, nil).Once()
+
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Second}, nil)
+
+	err := s.PushOneWithProject(context.Background(), "noproj3", "")
+
+	require.Error(t, err)
+	require.ErrorIs(t, err, grimsync.ErrNoProjectID)
+	require.Empty(t, pusher.pushed)
+}
+
+func TestSyncBatch_skips_commands_without_project_id(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+	cmds := []*db.Command{
+		{ID: 1, ShortID: "noproj", ProjectID: "", SyncedGW: false},
+		{ID: 2, ShortID: "withproj", ProjectID: "42", SyncedGW: false},
+	}
+	store.On("ListUnsynced", mock.Anything).Return(cmds, nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(2)).Return(nil).Once()
+
+	newSyncer(t, store, pusher).RunOnce(context.Background())
+
+	require.Len(t, pusher.pushed, 1, "only the command with a project ID should be pushed")
+	assert.Equal(t, int64(2), pusher.pushed[0].ID)
 }

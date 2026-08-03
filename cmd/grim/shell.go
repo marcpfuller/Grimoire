@@ -39,8 +39,7 @@ var shellCmd = &cobra.Command{
 }
 
 func init() {
-	shellCmd.Flags().String("project", "", "Ghostwriter project ID (required)")
-	_ = shellCmd.MarkFlagRequired("project")
+	shellCmd.Flags().String("project", "", "Ghostwriter project ID (optional; commands captured locally when omitted)")
 }
 
 func runShell(cmd *cobra.Command, _ []string) error {

@@ -13,6 +13,10 @@ import (
 	"github.com/marcpfuller/grimoire/internal/db"
 )
 
+// ErrNoProjectID is returned by PushOne and PushOneWithProject when the
+// command has no associated project ID and no override was provided.
+var ErrNoProjectID = errors.New("sync: command has no project ID; use --project to specify one")
+
 // AuthError indicates an authentication or configuration problem that requires
 // operator intervention (e.g. invalid or expired service token, wrong URL).
 // When Pusher.PushCommand returns an *AuthError the sync loop logs at ERROR
@@ -182,6 +186,10 @@ func (s *Syncer) syncBatch(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if cmd.ProjectID == "" {
+			s.logInfo("sync: skipping command with no project ID", "short_id", cmd.ShortID)
+			continue
+		}
 		if err := pusher.PushCommand(ctx, cmd); err != nil {
 			var authErr *AuthError
 			if errors.As(err, &authErr) {
@@ -201,6 +209,12 @@ func (s *Syncer) syncBatch(ctx context.Context) {
 	}
 }
 
+func (s *Syncer) logInfo(msg string, args ...any) {
+	if s.log != nil {
+		s.log.Info(msg, args...)
+	}
+}
+
 func (s *Syncer) logWarn(msg string, args ...any) {
 	if s.log != nil {
 		s.log.Warn(msg, args...)
@@ -215,8 +229,19 @@ func (s *Syncer) logError(msg string, args ...any) {
 
 // PushOne looks up the command identified by shortID and pushes it to
 // Ghostwriter immediately, regardless of the AutoSync setting. It is an
-// error if the command does not exist or has already been synced.
+// error if the command does not exist, has already been synced, or has no
+// project ID. Use PushOneWithProject to supply a project ID at push time.
 func (s *Syncer) PushOne(ctx context.Context, shortID string) error {
+	return s.pushOne(ctx, shortID, "")
+}
+
+// PushOneWithProject is like PushOne but overrides the command's project ID
+// for this push only — the DB is not updated. projectID must be non-empty.
+func (s *Syncer) PushOneWithProject(ctx context.Context, shortID, projectID string) error {
+	return s.pushOne(ctx, shortID, projectID)
+}
+
+func (s *Syncer) pushOne(ctx context.Context, shortID, projectOverride string) error {
 	cmd, err := s.store.GetCommandByShortID(ctx, shortID)
 	if err != nil {
 		return fmt.Errorf("sync: command %q not found: %w", shortID, err)
@@ -225,11 +250,23 @@ func (s *Syncer) PushOne(ctx context.Context, shortID string) error {
 		return fmt.Errorf("sync: command %q is already synced to Ghostwriter", shortID)
 	}
 
+	effectiveProjectID := cmd.ProjectID
+	if projectOverride != "" {
+		effectiveProjectID = projectOverride
+	}
+	if effectiveProjectID == "" {
+		return ErrNoProjectID
+	}
+
 	s.mu.RLock()
 	pusher := s.pusher
 	s.mu.RUnlock()
 
-	if err := pusher.PushCommand(ctx, cmd); err != nil {
+	// Use a shallow copy so the DB record is not mutated when an override is set.
+	pushCmd := *cmd
+	pushCmd.ProjectID = effectiveProjectID
+
+	if err := pusher.PushCommand(ctx, &pushCmd); err != nil {
 		return fmt.Errorf("sync: push %q: %w", shortID, err)
 	}
 	if err := s.store.MarkCommandSynced(ctx, cmd.ID); err != nil {
