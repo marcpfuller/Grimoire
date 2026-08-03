@@ -282,6 +282,7 @@ func (s *Session) readLoop(ctx context.Context, r io.Reader) {
 //     embedded params, bytes after are stored under the new commandID.
 //   - No marker: bytes are written to out; if capturing, also stored in DB;
 //     if idle and promptCapturing, accumulated in promptBuf.
+//
 // processChunk routes a single PTY read buffer based on OSC marker content
 // and current capture state:
 //

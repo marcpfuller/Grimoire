@@ -277,7 +277,6 @@ func TestReadLoop(t *testing.T) {
 		assert.Empty(t, ms.chunks)
 	})
 
-
 	t.Run("activate_marker_no_prompt_bytes_stores_output_only", func(t *testing.T) {
 		// No idle bytes before the activate: only post-marker output is stored.
 		ms := &mockStore{}

@@ -50,6 +50,10 @@ type RuntimeConfig struct {
 	// url/token pair. Returning a nil Pusher (or an error) prevents the swap.
 	// When url or token is empty it should return a no-op pusher, not an error.
 	NewPusher func(ctx context.Context, url, token string) (grimsync.Pusher, error)
+
+	// Shutdown, when non-nil, is called by POST /api/shutdown to trigger a
+	// graceful daemon shutdown. Typically wired to the context cancel func.
+	Shutdown func()
 }
 
 // Server holds the shared dependencies for all HTTP handlers.
@@ -104,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/config", s.handleUpdateConfig)
 	mux.HandleFunc("POST /api/cast", s.handleExportCast)
 	mux.HandleFunc("POST /api/sync", s.handleSync)
+	mux.HandleFunc("POST /api/shutdown", s.handleShutdown)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	return mux
 }
@@ -840,6 +845,19 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"synced": req.ShortID})
+}
+
+// handleShutdown triggers a graceful daemon shutdown by calling the Shutdown
+// func wired in via SetRuntime. Returns 503 if no Shutdown func is set.
+func (s *Server) handleShutdown(w http.ResponseWriter, _ *http.Request) {
+	if s.runtime.Shutdown == nil {
+		writeError(w, http.StatusServiceUnavailable, "shutdown not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "shutting down"})
+	// Call after writing the response so the client receives 200 before the
+	// daemon begins draining connections.
+	s.runtime.Shutdown()
 }
 
 // handleEvents streams server-sent events to the caller over a long-lived

@@ -27,6 +27,11 @@ type Manager interface {
 	// the unit file.
 	Uninstall() error
 
+	// Stop stops the running service without removing or disabling it.
+	// The service will start again on the next login/boot or when started
+	// explicitly. Returns an error if the service is not installed.
+	Stop() error
+
 	// Restart performs a platform-native service restart. Active shell hooks
 	// will silently tolerate the ~2s gap during restart.
 	Restart() error
