@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strings"
@@ -34,6 +35,22 @@ var ansiRe = regexp.MustCompile(
 		`|[@-Z\\-_]` + // Fe two-char escapes
 		`)`,
 )
+
+// GraphqlEndpoint returns the /v1/graphql endpoint for the given raw URL.
+// It strips any path, query, or fragment so that a URL like
+// "https://gw.example.com/users/admin/" correctly becomes
+// "https://gw.example.com/v1/graphql" rather than appending to a stale path.
+// Exported for testing.
+func GraphqlEndpoint(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("ghostwriter: invalid URL %q: %w", rawURL, err)
+	}
+	if u.Scheme == "" || u.Host == "" {
+		return "", fmt.Errorf("ghostwriter: URL %q is missing scheme or host", rawURL)
+	}
+	return u.Scheme + "://" + u.Host + "/v1/graphql", nil
+}
 
 // StripANSI removes all ANSI escape sequences from s, returning clean text
 // suitable for storage in Ghostwriter's output field. Exported for testing.
@@ -85,7 +102,10 @@ func (c *Client) Init(ctx context.Context) error {
 		return fmt.Errorf("ghostwriter: marshal discover request: %w", err)
 	}
 
-	endpoint := strings.TrimRight(c.url, "/") + "/v1/graphql"
+	endpoint, err := GraphqlEndpoint(c.url)
+	if err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("ghostwriter: build discover request: %w", err)
@@ -115,7 +135,7 @@ func (c *Client) Init(ctx context.Context) error {
 		Data struct {
 			Oplogs []struct {
 				ID int `json:"id"`
-			} `json:"oplog_oplog"`
+			} `json:"oplog"`
 		} `json:"data"`
 		Errors []gqlError `json:"errors"`
 	}
@@ -185,7 +205,10 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 	}
 
 	// --- POST to Hasura ---
-	endpoint := strings.TrimRight(c.url, "/") + "/v1/graphql"
+	endpoint, err := GraphqlEndpoint(c.url)
+	if err != nil {
+		return err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("ghostwriter: build request: %w", err)
@@ -275,7 +298,7 @@ func msToRFC3339(ms int64) string {
 
 // discoverQuery fetches all oplogs visible to the current service token.
 // Hasura's row-level permissions ensure the token sees only its authorized oplog(s).
-const discoverQuery = `{ oplog_oplog { id } }`
+const discoverQuery = `{ oplog { id } }`
 
 // insertMutation is the Hasura GraphQL mutation used to create an OplogEntry.
 // The service token must have the OPLOG_RW preset on the target oplog; Hasura
@@ -283,20 +306,20 @@ const discoverQuery = `{ oplog_oplog { id } }`
 // claim injected by Ghostwriter's webhook.
 const insertMutation = `
 mutation GrimoireInsertOplogEntry(
-  $oplog_id:         Int!
+  $oplog_id:         bigint!
   $command:          String!
   $output:           String
   $start_date:       timestamptz
   $end_date:         timestamptz
   $entry_identifier: String
 ) {
-  insert_oplog_oplogentry_one(object: {
-    oplog_id_id:       $oplog_id
+  insert_oplogEntry_one(object: {
+    oplog:             $oplog_id
     command:           $command
     output:            $output
-    start_date:        $start_date
-    end_date:          $end_date
-    entry_identifier:  $entry_identifier
+    startDate:         $start_date
+    endDate:           $end_date
+    entryIdentifier:   $entry_identifier
   }) {
     id
   }

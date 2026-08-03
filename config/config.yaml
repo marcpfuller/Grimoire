@@ -16,8 +16,11 @@ sync:
   interval_seconds: 30
 
 ghostwriter:
-  url: ""
-  token: ""
+  url: "http://localhost:8000"
+  token: "gwst_17d18c1e427e369c_2zpeeEN-YjVnM9-DTXwfS-rvN-yuXyxa2Gkx6SX9NCo"
+  # auto_sync: true  → all finalized commands are pushed automatically (default)
+  # auto_sync: false → use `grim sync <short-id>` to push commands manually
+  auto_sync: true
 
 scrub:
   rules: []

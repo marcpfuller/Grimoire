@@ -5,6 +5,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	stdsync "sync"
 	"time"
@@ -39,6 +40,11 @@ type Pusher interface {
 type Config struct {
 	// Interval between sync ticks. Defaults to 30 s when zero.
 	Interval time.Duration
+	// AutoSync controls whether the background loop automatically pushes all
+	// finalized commands. When false the loop is idle; commands must be pushed
+	// manually via PushOne. Defaults to true when not set explicitly — callers
+	// should pass true for the default auto-push behaviour.
+	AutoSync bool
 	// OnSynced is called after each command is successfully pushed and marked
 	// synced. The shortID of the synced command is passed. May be nil.
 	OnSynced func(shortID string)
@@ -82,6 +88,15 @@ func (s *Syncer) SetInterval(d time.Duration) {
 	case s.resetCh <- struct{}{}:
 	default:
 	}
+}
+
+// SetAutoSync updates the auto-sync flag at runtime. When enabled the
+// background loop resumes pushing all unsynced commands on the next tick.
+// Safe to call from any goroutine.
+func (s *Syncer) SetAutoSync(enabled bool) {
+	s.mu.Lock()
+	s.cfg.AutoSync = enabled
+	s.mu.Unlock()
 }
 
 // SetPusher swaps the active pusher. The next sync batch uses the new pusher.
@@ -144,10 +159,18 @@ func (s *Syncer) Run(ctx context.Context) {
 // Transient failures (network, 5xx) are logged at WARN.
 // Auth/config failures (*AuthError: 401, 403) are logged at ERROR — the
 // operator must act.
+//
+// When AutoSync is false the batch is skipped entirely; commands must be
+// pushed individually via PushOne.
 func (s *Syncer) syncBatch(ctx context.Context) {
 	s.mu.RLock()
 	pusher := s.pusher
+	autoSync := s.cfg.AutoSync
 	s.mu.RUnlock()
+
+	if !autoSync {
+		return
+	}
 
 	cmds, err := s.store.ListUnsynced(ctx)
 	if err != nil {
@@ -188,4 +211,33 @@ func (s *Syncer) logError(msg string, args ...any) {
 	if s.log != nil {
 		s.log.Error(msg, args...)
 	}
+}
+
+// PushOne looks up the command identified by shortID and pushes it to
+// Ghostwriter immediately, regardless of the AutoSync setting. It is an
+// error if the command does not exist or has already been synced.
+func (s *Syncer) PushOne(ctx context.Context, shortID string) error {
+	cmd, err := s.store.GetCommandByShortID(ctx, shortID)
+	if err != nil {
+		return fmt.Errorf("sync: command %q not found: %w", shortID, err)
+	}
+	if cmd.SyncedGW {
+		return fmt.Errorf("sync: command %q is already synced to Ghostwriter", shortID)
+	}
+
+	s.mu.RLock()
+	pusher := s.pusher
+	s.mu.RUnlock()
+
+	if err := pusher.PushCommand(ctx, cmd); err != nil {
+		return fmt.Errorf("sync: push %q: %w", shortID, err)
+	}
+	if err := s.store.MarkCommandSynced(ctx, cmd.ID); err != nil {
+		s.logWarn("sync: MarkCommandSynced failed", "command_id", cmd.ID, "err", err)
+		return fmt.Errorf("sync: mark synced %q: %w", shortID, err)
+	}
+	if s.cfg.OnSynced != nil {
+		s.cfg.OnSynced(cmd.ShortID)
+	}
+	return nil
 }

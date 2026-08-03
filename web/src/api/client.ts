@@ -59,4 +59,12 @@ export const RealAPI: ApiClient = {
     }).then(res => {
       if (!res.ok) throw new Error(`metadata patch failed: ${res.status}`)
     }),
+  syncCommand: shortId =>
+    fetch('/api/sync', {
+      method: 'POST',
+      headers: { ...authHeader(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ short_id: shortId }),
+    }).then(res => {
+      if (!res.ok) return res.json().then(e => { throw new Error(e.error ?? `sync failed: ${res.status}`) })
+    }),
 }

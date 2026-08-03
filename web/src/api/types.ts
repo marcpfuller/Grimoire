@@ -47,4 +47,5 @@ export interface ApiClient {
   fetchOutput: (commandId: string) => Promise<string>
   fetchCommandMetadata: (commandId: string) => Promise<import('./generated').MetadataResponse>
   patchCommandMetadata: (commandId: string, req: import('./generated').MetadataUpdateRequest) => Promise<void>
+  syncCommand: (shortId: string) => Promise<void>
 }

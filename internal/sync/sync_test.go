@@ -47,7 +47,7 @@ func makeCmd(id int64) *db.Command {
 
 func newSyncer(t *testing.T, store *dbmocks.MockStore, pusher grimsync.Pusher) *grimsync.Syncer {
 	t.Helper()
-	return grimsync.New(store, pusher, grimsync.Config{Interval: time.Second}, nil)
+	return grimsync.New(store, pusher, grimsync.Config{Interval: time.Second, AutoSync: true}, nil)
 }
 
 // --- RunOnce ---
@@ -156,7 +156,7 @@ func TestSyncer_Run_fires_immediately(t *testing.T) {
 		Return([]*db.Command{}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Hour}, nil)
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Hour, AutoSync: true}, nil)
 
 	go func() {
 		s.Run(ctx)
@@ -189,7 +189,7 @@ func TestSyncer_Run_fires_on_tick(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	s := grimsync.New(store, pusher, grimsync.Config{Interval: 5 * time.Millisecond}, nil)
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: 5 * time.Millisecond, AutoSync: true}, nil)
 	go s.Run(ctx)
 
 	select {
@@ -220,7 +220,7 @@ func TestSyncer_Run_drains_on_shutdown(t *testing.T) {
 		Return([]*db.Command{}, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Hour}, nil)
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Hour, AutoSync: true}, nil)
 
 	done := make(chan struct{})
 	go func() {
@@ -277,7 +277,7 @@ func TestSyncer_SetInterval_updates_live_ticker(t *testing.T) {
 	defer cancel()
 
 	// Start with a very long interval so the second tick never fires on its own.
-	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Hour}, nil)
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Hour, AutoSync: true}, nil)
 	go s.Run(ctx)
 
 	// Wait for the immediate first fire.
@@ -297,7 +297,7 @@ func TestSyncer_SetInterval_updates_live_ticker(t *testing.T) {
 func TestSyncer_SetInterval_zero_defaults_to_30s(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 	store.On("ListUnsynced", mock.Anything).Return([]*db.Command{}, nil).Maybe()
-	s := grimsync.New(store, &mockPusher{}, grimsync.Config{Interval: time.Minute}, nil)
+	s := grimsync.New(store, &mockPusher{}, grimsync.Config{Interval: time.Minute, AutoSync: true}, nil)
 	s.SetInterval(0)
 	assert.Equal(t, 30*time.Second, s.Interval())
 }
@@ -313,7 +313,7 @@ func TestSyncer_SetPusher_swaps_active_pusher(t *testing.T) {
 	store.On("ListUnsynced", mock.Anything).Return([]*db.Command{cmd}, nil).Once()
 	store.On("MarkCommandSynced", mock.Anything, int64(1)).Return(nil).Once()
 
-	s := grimsync.New(store, original, grimsync.Config{Interval: time.Second}, nil)
+	s := grimsync.New(store, original, grimsync.Config{Interval: time.Second, AutoSync: true}, nil)
 	s.SetPusher(replacement)
 
 	s.RunOnce(context.Background())
@@ -333,6 +333,7 @@ func TestSyncer_OnSynced_called_after_mark(t *testing.T) {
 	var synced []string
 	s := grimsync.New(store, pusher, grimsync.Config{
 		Interval: time.Second,
+		AutoSync: true,
 		OnSynced: func(shortID string) { synced = append(synced, shortID) },
 	}, nil)
 
@@ -352,10 +353,127 @@ func TestSyncer_OnSynced_not_called_on_mark_error(t *testing.T) {
 	var synced []string
 	s := grimsync.New(store, pusher, grimsync.Config{
 		Interval: time.Second,
+		AutoSync: true,
 		OnSynced: func(shortID string) { synced = append(synced, shortID) },
 	}, nil)
 
 	s.RunOnce(context.Background())
 
 	require.Empty(t, synced, "OnSynced must not be called when MarkCommandSynced fails")
+}
+
+// --- AutoSync ---
+
+func TestSyncer_AutoSync_false_skips_batch(t *testing.T) {
+	// When AutoSync is false, syncBatch must not call ListUnsynced or push anything.
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+	// No expectations set — any call to store or pusher will cause the mock to fail.
+	s := grimsync.New(store, pusher, grimsync.Config{
+		Interval: time.Second,
+		AutoSync: false,
+	}, nil)
+
+	s.RunOnce(context.Background())
+
+	require.Empty(t, pusher.pushed)
+}
+
+func TestSyncer_SetAutoSync_enables_batch(t *testing.T) {
+	// After SetAutoSync(true), the next RunOnce should process commands normally.
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+	cmd := makeCmd(1)
+	store.On("ListUnsynced", mock.Anything).Return([]*db.Command{cmd}, nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(1)).Return(nil).Once()
+
+	s := grimsync.New(store, pusher, grimsync.Config{
+		Interval: time.Second,
+		AutoSync: false,
+	}, nil)
+	s.SetAutoSync(true)
+
+	s.RunOnce(context.Background())
+
+	require.Len(t, pusher.pushed, 1)
+}
+
+// --- PushOne ---
+
+func TestSyncer_PushOne_success(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+	cmd := &db.Command{ID: 5, ShortID: "abc1234", SyncedGW: false}
+
+	store.On("GetCommandByShortID", mock.Anything, "abc1234").Return(cmd, nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(5)).Return(nil).Once()
+
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Second}, nil)
+
+	err := s.PushOne(context.Background(), "abc1234")
+
+	require.NoError(t, err)
+	require.Len(t, pusher.pushed, 1)
+	assert.Equal(t, int64(5), pusher.pushed[0].ID)
+}
+
+func TestSyncer_PushOne_already_synced_returns_error(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+	cmd := &db.Command{ID: 5, ShortID: "abc1234", SyncedGW: true}
+
+	store.On("GetCommandByShortID", mock.Anything, "abc1234").Return(cmd, nil).Once()
+
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Second}, nil)
+
+	err := s.PushOne(context.Background(), "abc1234")
+
+	require.Error(t, err)
+	require.Empty(t, pusher.pushed, "already-synced command must not be pushed again")
+}
+
+func TestSyncer_PushOne_not_found_returns_error(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+
+	store.On("GetCommandByShortID", mock.Anything, "missing1").Return((*db.Command)(nil), db.ErrNotFound).Once()
+
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Second}, nil)
+
+	err := s.PushOne(context.Background(), "missing1")
+
+	require.Error(t, err)
+	require.Empty(t, pusher.pushed)
+}
+
+func TestSyncer_PushOne_push_failure_returns_error(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{err: errors.New("network error")}
+	cmd := &db.Command{ID: 7, ShortID: "abc5678", SyncedGW: false}
+
+	store.On("GetCommandByShortID", mock.Anything, "abc5678").Return(cmd, nil).Once()
+
+	s := grimsync.New(store, pusher, grimsync.Config{Interval: time.Second}, nil)
+
+	err := s.PushOne(context.Background(), "abc5678")
+
+	require.Error(t, err)
+}
+
+func TestSyncer_PushOne_calls_OnSynced(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	pusher := &mockPusher{}
+	cmd := &db.Command{ID: 9, ShortID: "def9999", SyncedGW: false}
+
+	store.On("GetCommandByShortID", mock.Anything, "def9999").Return(cmd, nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(9)).Return(nil).Once()
+
+	var synced []string
+	s := grimsync.New(store, pusher, grimsync.Config{
+		Interval: time.Second,
+		OnSynced: func(shortID string) { synced = append(synced, shortID) },
+	}, nil)
+
+	require.NoError(t, s.PushOne(context.Background(), "def9999"))
+	assert.Equal(t, []string{"def9999"}, synced)
 }
