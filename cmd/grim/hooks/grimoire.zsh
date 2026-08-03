@@ -13,6 +13,11 @@
 # The script is a no-op if GRIMOIRE_PANE_ID is not set, so sourcing it
 # unconditionally in .zshrc is safe — it only activates inside `grim shell`.
 
+# --- Tab completion (active in all shells, not just grim sessions) ---
+# Load cobra-generated completion so `grim shell --project <TAB>` returns
+# project codenames from the daemon instead of falling back to file completion.
+(( ${+commands[grim]} )) && eval "$(grim completion zsh 2>/dev/null)"
+
 # --- Guard: only activate inside a grim shell session ---
 [[ -z "${GRIMOIRE_PANE_ID}" ]] && return 0
 

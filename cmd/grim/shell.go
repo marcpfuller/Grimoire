@@ -39,7 +39,11 @@ var shellCmd = &cobra.Command{
 }
 
 func init() {
-	shellCmd.Flags().String("project", "", "Ghostwriter project ID (optional; commands captured locally when omitted)")
+	shellCmd.Flags().String("project", "", "Ghostwriter project ID or codename (optional; commands captured locally when omitted)")
+	_ = shellCmd.RegisterFlagCompletionFunc("project", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
+		// Suppress file completion — project values are free-form IDs or codenames.
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	})
 }
 
 func runShell(cmd *cobra.Command, _ []string) error {

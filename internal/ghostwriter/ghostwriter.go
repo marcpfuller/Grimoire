@@ -17,6 +17,7 @@ import (
 	"net/url"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -60,12 +61,12 @@ func StripANSI(s string) string {
 
 // Client implements grimsync.Pusher against a live Ghostwriter instance.
 type Client struct {
-	store           db.Store
-	url             string
-	token           string
-	http            *http.Client
-	logger          *slog.Logger
-	resolvedOplogID int // cached by Init; zero means Init has not yet run
+	store          db.Store
+	url            string
+	token          string
+	http           *http.Client
+	logger         *slog.Logger
+	oplogByProject map[int]int // projectID → oplogID, populated by Init; nil until Init succeeds
 }
 
 // New returns a Client. Call Init on the returned client before pushing commands.
@@ -81,25 +82,24 @@ func NewWithHTTP(store db.Store, url, token string, hc *http.Client, logger *slo
 	return &Client{store: store, url: url, token: token, http: hc, logger: logger}
 }
 
-// Init resolves the oplog ID by querying Ghostwriter for the single oplog
-// accessible to the configured service token. The result is cached; subsequent
-// calls are no-ops.
+// Init builds the projectID → oplogID map by querying all oplogs accessible to
+// the configured token. The result is cached; subsequent calls are no-ops.
 //
 // Init must complete before any calls to PushCommand. Concurrent invocations
 // of Init and PushCommand are not safe.
 //
 // It returns *grimsync.AuthError for HTTP 401/403 or Hasura access-denied.
 func (c *Client) Init(ctx context.Context) error {
-	if c.resolvedOplogID != 0 {
-		return nil // idempotent: already discovered
+	if c.oplogByProject != nil {
+		return nil // idempotent: already initialized
 	}
 	if c.url == "" || c.token == "" {
 		return fmt.Errorf("ghostwriter: URL and Token must be set before calling Init")
 	}
 
-	body, err := json.Marshal(map[string]any{"query": discoverQuery})
+	body, err := json.Marshal(map[string]any{"query": initQuery})
 	if err != nil {
-		return fmt.Errorf("ghostwriter: marshal discover request: %w", err)
+		return fmt.Errorf("ghostwriter: marshal init request: %w", err)
 	}
 
 	endpoint, err := GraphqlEndpoint(c.url)
@@ -108,56 +108,60 @@ func (c *Client) Init(ctx context.Context) error {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
-		return fmt.Errorf("ghostwriter: build discover request: %w", err)
+		return fmt.Errorf("ghostwriter: build init request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+c.token)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("ghostwriter: discover http: %w", err)
+		return fmt.Errorf("ghostwriter: init http: %w", err)
 	}
 	defer resp.Body.Close() //nolint:errcheck
 
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return fmt.Errorf("ghostwriter: read discover response: %w", err)
+		return fmt.Errorf("ghostwriter: read init response: %w", err)
 	}
 
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		return &grimsync.AuthError{Err: fmt.Errorf("HTTP %d during oplog discovery", resp.StatusCode)}
+		return &grimsync.AuthError{Err: fmt.Errorf("HTTP %d during Init", resp.StatusCode)}
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ghostwriter: discover: unexpected status %d: %.200s", resp.StatusCode, respBody)
+		return fmt.Errorf("ghostwriter: init: unexpected status %d: %.200s", resp.StatusCode, respBody)
 	}
 
 	var result struct {
 		Data struct {
 			Oplogs []struct {
-				ID int `json:"id"`
+				ID        int `json:"id"`
+				ProjectID int `json:"projectId"`
 			} `json:"oplog"`
 		} `json:"data"`
 		Errors []gqlError `json:"errors"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return fmt.Errorf("ghostwriter: parse discover response: %w", err)
+		return fmt.Errorf("ghostwriter: parse init response: %w", err)
 	}
 	if len(result.Errors) > 0 {
 		return result.Errors[0].asError()
 	}
-
-	switch len(result.Data.Oplogs) {
-	case 0:
-		return fmt.Errorf("ghostwriter: token has no accessible oplog; verify the OPLOG_RW preset is set")
-	case 1:
-		c.resolvedOplogID = result.Data.Oplogs[0].ID
-		if c.logger != nil {
-			c.logger.Info("ghostwriter: discovered oplog", "oplog_id", c.resolvedOplogID)
-		}
-		return nil
-	default:
-		return fmt.Errorf("ghostwriter: token grants access to %d oplogs; use a dedicated OPLOG_RW token scoped to a single oplog", len(result.Data.Oplogs))
+	if len(result.Data.Oplogs) == 0 {
+		return fmt.Errorf("ghostwriter: token has no accessible oplog; verify the token has OPLOG_RW access to at least one project oplog")
 	}
+
+	// Build map; first oplog wins when a project has more than one.
+	m := make(map[int]int, len(result.Data.Oplogs))
+	for _, o := range result.Data.Oplogs {
+		if _, exists := m[o.ProjectID]; !exists {
+			m[o.ProjectID] = o.ID
+		}
+	}
+	c.oplogByProject = m
+	if c.logger != nil {
+		c.logger.Info("ghostwriter: Init complete", "projects", len(m))
+	}
+	return nil
 }
 
 // PushCommand implements grimsync.Pusher. It loads the command's output chunks
@@ -173,8 +177,17 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 	if c.url == "" || c.token == "" {
 		return fmt.Errorf("ghostwriter: URL and Token must be configured")
 	}
-	if c.resolvedOplogID == 0 {
-		return fmt.Errorf("ghostwriter: oplog ID not resolved; call Init before pushing")
+	if c.oplogByProject == nil {
+		return fmt.Errorf("ghostwriter: oplog map not initialized; call Init before pushing")
+	}
+
+	projectID, parseErr := strconv.Atoi(cmd.ProjectID)
+	if parseErr != nil || projectID <= 0 {
+		return fmt.Errorf("ghostwriter: command has invalid project ID %q", cmd.ProjectID)
+	}
+	oplogID, ok := c.oplogByProject[projectID]
+	if !ok {
+		return fmt.Errorf("ghostwriter: no oplog mapped for project %d; token may not have OPLOG_RW access to this project", projectID)
 	}
 
 	// --- Assemble output ---
@@ -186,7 +199,7 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 
 	// --- Build GraphQL request ---
 	vars := map[string]any{
-		"oplog_id":         c.resolvedOplogID,
+		"oplog_id":         oplogID,
 		"command":          cmd.Command,
 		"output":           output,
 		"start_date":       msToRFC3339(cmd.StartedAt),
@@ -296,9 +309,11 @@ func msToRFC3339(ms int64) string {
 	return time.UnixMilli(ms).UTC().Format(time.RFC3339Nano)
 }
 
-// discoverQuery fetches all oplogs visible to the current service token.
-// Hasura's row-level permissions ensure the token sees only its authorized oplog(s).
-const discoverQuery = `{ oplog { id } }`
+// initQuery maps every accessible oplog to its parent project. Uses the raw
+// projectId FK column (Hasura custom name for project_id) rather than the
+// project relationship, because the service role has column access but not
+// relationship-traversal access to rolodex_project.
+const initQuery = `{ oplog { id projectId } }`
 
 // insertMutation is the Hasura GraphQL mutation used to create an OplogEntry.
 // The service token must have the OPLOG_RW preset on the target oplog; Hasura

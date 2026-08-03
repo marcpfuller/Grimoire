@@ -223,6 +223,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "pane_id is required")
 		return
 	}
+
 	if req.Width <= 0 {
 		req.Width = 220
 	}

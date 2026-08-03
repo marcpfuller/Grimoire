@@ -13,6 +13,13 @@
 # The script is a no-op if GRIMOIRE_PANE_ID is not set, so sourcing it
 # unconditionally in .bashrc is safe — it only activates inside `grim shell`.
 
+# --- Tab completion (active in all shells, not just grim sessions) ---
+# Load cobra-generated completion so `grim shell --project <TAB>` returns
+# project codenames from the daemon instead of falling back to file completion.
+if command -v grim >/dev/null 2>&1; then
+    eval "$(grim completion bash 2>/dev/null)"
+fi
+
 # --- Guard: only activate inside a grim shell session ---
 [[ -z "${GRIMOIRE_PANE_ID}" ]] && return 0
 
