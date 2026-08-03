@@ -43,6 +43,7 @@ func init() {
 	rootCmd.AddCommand(castCmd)
 	rootCmd.AddCommand(historyCmd)
 	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(syncCmd)
 }
 
 // initConfig reads the config file and sets Viper defaults. Called by
@@ -71,6 +72,7 @@ func initConfig() error {
 		viper.SetDefault("auth.token_path", "token")
 	}
 	viper.SetDefault("sync.interval_seconds", 30)
+	viper.SetDefault("ghostwriter.auto_sync", true)
 	viper.SetDefault("shell", "")
 	viper.SetDefault("log.dir", ".")
 	viper.SetDefault("log.filename", "grimoire.log")

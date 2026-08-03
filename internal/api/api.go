@@ -103,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleUpdateConfig)
 	mux.HandleFunc("POST /api/cast", s.handleExportCast)
+	mux.HandleFunc("POST /api/sync", s.handleSync)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	return mux
 }
@@ -600,7 +601,7 @@ func (s *Server) handleGetOutput(w http.ResponseWriter, r *http.Request) {
 // Keys not in this map are never read or written by the API — they can only be
 // changed by editing the config file directly.
 var writableConfig = map[string][]string{
-	"ghostwriter": {"url", "token"},
+	"ghostwriter": {"url", "token", "auto_sync"},
 	"sync":        {"interval_seconds"},
 	"log":         {"level", "dir", "max_mb", "max_backups"},
 	"cast":        {"dir"},
@@ -682,6 +683,12 @@ func (s *Server) handleUpdateConfig(w http.ResponseWriter, r *http.Request) {
 				d := time.Duration(viper.GetInt("sync.interval_seconds")) * time.Second
 				s.runtime.Syncer.SetInterval(d)
 				s.logInfo("config: sync interval changed", "interval", d.String())
+			}
+		case "ghostwriter.auto_sync":
+			if s.runtime.Syncer != nil {
+				enabled := viper.GetBool("ghostwriter.auto_sync")
+				s.runtime.Syncer.SetAutoSync(enabled)
+				s.logInfo("config: auto_sync changed", "auto_sync", enabled)
 			}
 		case "ghostwriter.url", "ghostwriter.token":
 			gwChanged = true
@@ -797,6 +804,42 @@ func (s *Server) logInfo(msg string, args ...any) {
 // Used by `grim shell` to detect daemon outages during an active session.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleSync handles POST /api/sync.
+// It pushes a single unsynced command to Ghostwriter immediately, regardless
+// of the auto_sync setting. The request body must be JSON with a "short_id"
+// field. Returns 404 if the command is not found, 409 if already synced.
+func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		ShortID string `json:"short_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if req.ShortID == "" {
+		writeError(w, http.StatusBadRequest, "short_id is required")
+		return
+	}
+	if s.runtime.Syncer == nil {
+		writeError(w, http.StatusServiceUnavailable, "sync not available")
+		return
+	}
+	if err := s.runtime.Syncer.PushOne(r.Context(), req.ShortID); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "command not found: "+req.ShortID)
+			return
+		}
+		// "already synced" is a conflict, anything else is a server error.
+		if strings.Contains(err.Error(), "already synced") {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"synced": req.ShortID})
 }
 
 // handleEvents streams server-sent events to the caller over a long-lived

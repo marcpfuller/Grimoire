@@ -136,6 +136,7 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	interval := time.Duration(viper.GetInt("sync.interval_seconds")) * time.Second
 	syncer := grimsync.New(store, pusher, grimsync.Config{
 		Interval: interval,
+		AutoSync: viper.GetBool("ghostwriter.auto_sync"),
 		OnSynced: func(shortID string) {
 			broker.Broadcast(events.Event{
 				Type: "command_synced",

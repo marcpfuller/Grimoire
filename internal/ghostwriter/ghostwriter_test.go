@@ -36,7 +36,7 @@ var simpleChunks = []*db.OutputChunk{
 	{ID: 2, CommandID: 1, OffsetMs: 50, Data: []byte("drwxr-xr-x  2 root root 4096 Jul 24 12:00 .\n")},
 }
 
-const validGQLResponse = `{"data":{"insert_oplog_oplogentry_one":{"id":99}}}`
+const validGQLResponse = `{"data":{"insert_oplogEntry_one":{"id":99}}}`
 
 // newServer returns an httptest.Server that always responds with the given
 // status code and body. It also records the last request seen.
@@ -221,7 +221,7 @@ func TestPushCommand_InitNotCalled_ReturnsErrorBeforeHTTP(t *testing.T) {
 
 // ---- Init / oplog discovery tests ----
 
-const discoverResponse = `{"data":{"oplog_oplog":[{"id":42}]}}`
+const discoverResponse = `{"data":{"oplog":[{"id":42}]}}`
 
 func TestInit_HappyPath(t *testing.T) {
 	// Server handles both the discover query and the subsequent push.
@@ -262,7 +262,7 @@ func TestInit_HappyPath(t *testing.T) {
 }
 
 func TestInit_NoOplog_ReturnsError(t *testing.T) {
-	body := `{"data":{"oplog_oplog":[]}}`
+	body := `{"data":{"oplog":[]}}`
 	srv, _ := newServer(t, http.StatusOK, body)
 
 	ms := dbmocks.NewMockStore(t)
@@ -274,7 +274,7 @@ func TestInit_NoOplog_ReturnsError(t *testing.T) {
 }
 
 func TestInit_MultipleOplogs_ReturnsError(t *testing.T) {
-	body := `{"data":{"oplog_oplog":[{"id":1},{"id":2}]}}`
+	body := `{"data":{"oplog":[{"id":1},{"id":2}]}}`
 	srv, _ := newServer(t, http.StatusOK, body)
 
 	ms := dbmocks.NewMockStore(t)
@@ -374,6 +374,35 @@ func TestStripANSI(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.Equal(t, tt.want, ghostwriter.StripANSI(tt.input))
+		})
+	}
+}
+
+func TestGraphqlEndpoint(t *testing.T) {
+	tests := []struct {
+		name    string
+		rawURL  string
+		want    string
+		wantErr bool
+	}{
+		{"bare host", "http://localhost:8000", "http://localhost:8000/v1/graphql", false},
+		{"trailing slash", "http://localhost:8000/", "http://localhost:8000/v1/graphql", false},
+		{"path suffix from browser", "http://localhost:8000/users/admin/", "http://localhost:8000/v1/graphql", false},
+		{"path suffix no trailing slash", "http://localhost:8000/users/admin", "http://localhost:8000/v1/graphql", false},
+		{"https with port", "https://gw.example.com:8443/some/path", "https://gw.example.com:8443/v1/graphql", false},
+		{"no scheme", "localhost:8000", "", true},
+		{"empty", "", "", true},
+		{"invalid url", "://bad", "", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := ghostwriter.GraphqlEndpoint(tt.rawURL)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

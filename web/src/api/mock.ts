@@ -118,4 +118,12 @@ export const MockAPI: ApiClient = {
         ],
       }
     }),
+  syncCommand: shortId =>
+    delay(300).then(() => {
+      for (const s of MOCK_SESSIONS) {
+        const cmd = s.commands.find(c => c.id === shortId)
+        if (cmd) { cmd.syncedGW = true; return }
+      }
+      throw new Error(`command not found: ${shortId}`)
+    }),
 }
