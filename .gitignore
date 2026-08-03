@@ -47,6 +47,9 @@ dist/
 # casts dir
 casts/
 
+# graphify
+graphify-out/
+
 # Web frontend — generated/ephemeral directories
 web/node_modules/
 web/dist/
