@@ -21,7 +21,7 @@ func Strip(b []byte) string {
 		stOSCEsc        // inside OSC, saw \x1b — waiting for \ to confirm ST
 		stStr           // inside DCS/SOS/PM/APC string (\x1bP/X/^/_)
 		stStrEsc        // inside DCS etc., saw \x1b — waiting for \ to confirm ST
-		stCharset        // after \x1b( / ) / * / + — consume one designator byte
+		stCharset       // after \x1b( / ) / * / + — consume one designator byte
 	)
 
 	out := make([]byte, 0, len(b))

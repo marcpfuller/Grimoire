@@ -1089,3 +1089,32 @@ func TestHandleExportCast(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// POST /api/shutdown
+// ---------------------------------------------------------------------------
+
+func TestHandleShutdown_triggers_shutdown(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	srv := newServer(t, store, 5)
+
+	called := false
+	srv.SetRuntime(api.RuntimeConfig{
+		Shutdown: func() { called = true },
+	})
+
+	w := doRequest(t, srv, http.MethodPost, "/api/shutdown", nil)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called, "Shutdown func must be called")
+}
+
+func TestHandleShutdown_no_handler_returns_503(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	srv := newServer(t, store, 5)
+	// No Shutdown func set in RuntimeConfig.
+
+	w := doRequest(t, srv, http.MethodPost, "/api/shutdown", nil)
+
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+}

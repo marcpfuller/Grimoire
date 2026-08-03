@@ -39,8 +39,14 @@ var daemonStartCmd = &cobra.Command{
 	RunE:  runDaemonStart,
 }
 
+var daemonStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Gracefully stop the running Grimoire daemon",
+	RunE:  runDaemonStop,
+}
+
 func init() {
-	daemonCmd.AddCommand(daemonStartCmd)
+	daemonCmd.AddCommand(daemonStartCmd, daemonStopCmd)
 }
 
 func runDaemonStart(_ *cobra.Command, _ []string) error {
@@ -73,6 +79,9 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	// shutdownCh lets the /api/shutdown handler unblock the main select below.
+	shutdownCh := make(chan struct{}, 1)
 
 	// --- bearer token ---
 	token, err := auth.LoadOrCreate(viper.GetString("auth.token_path"))
@@ -155,6 +164,13 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	srv.SetRuntime(api.RuntimeConfig{
 		Syncer:   syncer,
 		LevelVar: levelVar,
+		Shutdown: func() {
+			cancel()
+			select {
+			case shutdownCh <- struct{}{}:
+			default:
+			}
+		},
 		NewPusher: func(ctx context.Context, url, token string) (grimsync.Pusher, error) {
 			if url == "" || token == "" {
 				log.Warn("ghostwriter pusher disabled — url or token is empty")
@@ -182,6 +198,9 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 	select {
 	case <-sigCh:
 		log.Info("grim daemon shutting down")
+		cancel()
+	case <-shutdownCh:
+		log.Info("grim daemon shutting down (API request)")
 		cancel()
 	case err := <-httpErrCh:
 		return fmt.Errorf("http server: %w", err)
@@ -234,3 +253,20 @@ func uiHandler(fsys fs.FS, token string) http.Handler {
 type noopPusher struct{}
 
 func (n *noopPusher) PushCommand(_ context.Context, _ *db.Command) error { return nil }
+
+func runDaemonStop(_ *cobra.Command, _ []string) error {
+	resp, err := apiPost("/api/shutdown", nil)
+	if err != nil {
+		return fmt.Errorf("no daemon running at %s:%d (or unreachable): %w",
+			viper.GetString("server.host"),
+			viper.GetInt("server.port"),
+			err,
+		)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("daemon returned %d", resp.StatusCode)
+	}
+	fmt.Println("Grimoire daemon stopped.")
+	return nil
+}

@@ -39,8 +39,14 @@ var serviceStatusCmd = &cobra.Command{
 	RunE:  runServiceStatus,
 }
 
+var serviceStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop the Grimoire daemon service without removing it",
+	RunE:  runServiceStop,
+}
+
 func init() {
-	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceRestartCmd, serviceStatusCmd)
+	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceRestartCmd, serviceStatusCmd, serviceStopCmd)
 }
 
 func serviceManager() (service.Manager, error) {
@@ -98,5 +104,17 @@ func runServiceStatus(_ *cobra.Command, _ []string) error {
 		return err
 	}
 	service.PrintStatus(os.Stdout, info)
+	return nil
+}
+
+func runServiceStop(_ *cobra.Command, _ []string) error {
+	mgr, err := serviceManager()
+	if err != nil {
+		return err
+	}
+	if err := mgr.Stop(); err != nil {
+		return err
+	}
+	fmt.Println("Grimoire daemon service stopped.")
 	return nil
 }
