@@ -13,7 +13,7 @@ export type {
 
 export type ActiveView = 'sessions' | 'tags' | 'search' | 'settings'
 
-export type ConfigValue = string | number | boolean
+export type ConfigValue = string | number | boolean | string[]
 
 export interface AppConfig {
   [group: string]: Record<string, ConfigValue>

@@ -97,6 +97,24 @@ describe('maskSensitive', () => {
     it('does not mask a zero numeric value', () => {
         expect(maskSensitive('token_count', 0)).toBe('0')
     })
+
+    // --- string[] values ---
+
+    it('shows count for a sensitive string[] field', () => {
+        expect(maskSensitive('tokens', ['gwst_abc', 'gwst_def'])).toBe('2 token(s) configured')
+    })
+
+    it('shows count for a single-element sensitive string[] field', () => {
+        expect(maskSensitive('tokens', ['gwst_abc'])).toBe('1 token(s) configured')
+    })
+
+    it('shows zero count for an empty sensitive string[]', () => {
+        expect(maskSensitive('tokens', [])).toBe('0 token(s) configured')
+    })
+
+    it('joins values for a non-sensitive string[] field', () => {
+        expect(maskSensitive('tags', ['recon', 'lateral'])).toBe('recon, lateral')
+    })
 })
 
 // ---------------------------------------------------------------------------

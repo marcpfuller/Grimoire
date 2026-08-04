@@ -10,6 +10,8 @@ export interface SettingsEditorProps {
 export function SettingsEditor({ selectedSetting, updateConfig }: SettingsEditorProps) {
   const [editValue, setEditValue] = useState('')
 
+  const isArray = Array.isArray(selectedSetting?.value)
+
   const isSensitive = Boolean(
     selectedSetting &&
     (selectedSetting.key.toLowerCase().includes('token') ||
@@ -19,7 +21,13 @@ export function SettingsEditor({ selectedSetting, updateConfig }: SettingsEditor
 
   useEffect(() => {
     if (!selectedSetting) return
-    setEditValue(isSensitive ? '' : String(selectedSetting.value))
+    if (isSensitive) {
+      setEditValue('')
+    } else if (Array.isArray(selectedSetting.value)) {
+      setEditValue(selectedSetting.value.join('\n'))
+    } else {
+      setEditValue(String(selectedSetting.value))
+    }
   }, [selectedSetting, isSensitive])
 
   if (!selectedSetting) {
@@ -32,13 +40,28 @@ export function SettingsEditor({ selectedSetting, updateConfig }: SettingsEditor
 
   const handleApply = () => {
     if (isSensitive && editValue === '') return
-    let parsed: ConfigValue = editValue
-    if (typeof selectedSetting.value === 'boolean') parsed = editValue === 'true'
-    else if (typeof selectedSetting.value === 'number') parsed = Number(editValue)
+    let parsed: ConfigValue
+    if (isArray) {
+      parsed = editValue.split('\n').map(s => s.trim()).filter(s => s.length > 0)
+    } else if (typeof selectedSetting.value === 'boolean') {
+      parsed = editValue === 'true'
+    } else if (typeof selectedSetting.value === 'number') {
+      parsed = Number(editValue)
+    } else {
+      parsed = editValue
+    }
     void updateConfig(selectedSetting.group, selectedSetting.key, parsed)
   }
 
-  const handleCancel = () => setEditValue(isSensitive ? '' : String(selectedSetting.value))
+  const handleCancel = () => {
+    if (isSensitive) {
+      setEditValue('')
+    } else if (isArray && Array.isArray(selectedSetting.value)) {
+      setEditValue(selectedSetting.value.join('\n'))
+    } else {
+      setEditValue(String(selectedSetting.value))
+    }
+  }
 
   return (
     <div className="flex-1 flex flex-col min-w-0 bg-vscode-bg">
@@ -72,7 +95,18 @@ export function SettingsEditor({ selectedSetting, updateConfig }: SettingsEditor
 
           <div className="flex flex-col gap-2">
             <label className="text-[12px] font-semibold text-vscode-text">New Value</label>
-            {typeof selectedSetting.value === 'boolean' ? (
+            {isArray ? (
+              <div className="flex flex-col gap-1">
+                <textarea
+                  className="w-full bg-[#3c3c3c] text-[#cccccc] border border-vscode-border focus:border-vscode-accent focus:ring-0 focus:outline-none rounded-sm px-3 py-2 text-[13px] font-code resize-y min-h-[80px]"
+                  value={editValue}
+                  onChange={e => setEditValue(e.target.value)}
+                  placeholder={isSensitive ? 'leave blank to keep current' : ''}
+                  spellCheck={false}
+                />
+                <span className="text-[11px] text-vscode-text-muted">One service token per line. Replaces the entire list on save.</span>
+              </div>
+            ) : typeof selectedSetting.value === 'boolean' ? (
               <select
                 className="w-full bg-[#3c3c3c] text-[#cccccc] border border-vscode-border focus:border-vscode-accent focus:ring-0 focus:outline-none rounded-sm px-3 py-2 text-[13px] font-code"
                 value={editValue}

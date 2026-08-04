@@ -47,7 +47,7 @@ PORT     STATE SERVICE VERSION
 |   Capabilities flags: 65535`
 
 const MOCK_CONFIG: AppConfig = {
-  ghostwriter: { url: 'https://ghostwriter.example.com', token: 'gw_sk-1234567890abcdef' },
+  ghostwriter: { url: 'https://ghostwriter.example.com', tokens: ['gw_sk-1234567890abcdef'] },
   sync: { interval_seconds: 30 },
   cast: { dir: '/tmp/grimoire/casts' },
   log: { level: 'info', dir: '.', max_mb: 50, max_backups: 5 },
