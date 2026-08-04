@@ -17,12 +17,15 @@ sync:
 
 ghostwriter:
   url: "http://localhost:8000"
-  # Service token (gwst_…) scoped to a single project's oplog.
+  # Service tokens (gwst_…) scoped to one or more project oplogs.
   # Create one in GW: Profile → Service Tokens → select the project's oplog → OPLOG_RW preset.
-  # Switch tokens when moving to a different project:
-  #   grim config set ghostwriter.token gwst_<new-token>
-  #   grim daemon restart
-  token: "gwst_6576615392994f17_ukYeMtvcK9q27A-rHNs70fW2bYnS9OVuunx8kUVR4do"
+  # Multiple tokens let a single grim instance sync across several projects.
+  # Example:
+  #   tokens:
+  #     - "gwst_abc123..."
+  #     - "gwst_def456..."
+  tokens: 
+    - "gwst_b8e62972ed8e6628_E8X1J6snGuIl7ks3EjADQnjmGeogkBNav-OszHRRooQ"
   # auto_sync: true  → all finalized commands are pushed automatically (default)
   # auto_sync: false → use `grim sync <short-id>` to push commands manually
   auto_sync: true

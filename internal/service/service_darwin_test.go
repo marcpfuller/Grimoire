@@ -17,20 +17,20 @@ import (
 func TestPlistContent(t *testing.T) {
 	m := service.NewForTest(
 		"/usr/local/bin/grim",
-		"/Users/op/.config/grimoire/config.yaml",
+		"/Users/op/.grim/config.yaml",
 		"/tmp/com.grimoire.daemon.plist",
-		"/Users/op/.config/grimoire/grimoire.log",
+		"/Users/op/.grim/grimoire.log",
 	)
 	got := m.PlistContent()
 
 	assert.Contains(t, got, `<string>com.grimoire.daemon</string>`, "label")
 	assert.Contains(t, got, `<string>/usr/local/bin/grim</string>`, "binary path")
 	assert.Contains(t, got, `<string>--config</string>`, "--config flag")
-	assert.Contains(t, got, `<string>/Users/op/.config/grimoire/config.yaml</string>`, "config path")
+	assert.Contains(t, got, `<string>/Users/op/.grim/config.yaml</string>`, "config path")
 	assert.Contains(t, got, `<string>daemon</string>`, "daemon subcommand")
 	assert.Contains(t, got, `<string>start</string>`, "start subcommand")
 	assert.Contains(t, got, `<true/>`, "RunAtLoad and KeepAlive")
-	assert.Contains(t, got, `<string>/Users/op/.config/grimoire/grimoire.log</string>`, "log path")
+	assert.Contains(t, got, `<string>/Users/op/.grim/grimoire.log</string>`, "log path")
 	assert.True(t, strings.HasPrefix(got, `<?xml`), "must start with XML declaration")
 }
 

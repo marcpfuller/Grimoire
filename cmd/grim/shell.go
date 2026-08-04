@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -49,15 +48,15 @@ func init() {
 
 func runShell(cmd *cobra.Command, _ []string) error {
 	oplogArg, _ := cmd.Flags().GetString("oplog")
-	// Accept either a numeric oplog ID or a display name. Numeric IDs enable
-	// sync immediately; names are stored as oplog_name and will be resolved by
-	// the interactive selector in a future release.
-	var oplogID int
-	var oplogName string
-	if n, err := strconv.Atoi(oplogArg); err == nil && n > 0 {
-		oplogID = n
-	} else {
-		oplogName = oplogArg
+
+	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
+	oplogID, oplogName, err := resolveOplog(oplogArg, isTTY, resolveOplogDeps{
+		fetch:     fetchOplogs,
+		selectFn:  selectOplog,
+		confirmFn: confirmLocalCapture,
+	})
+	if err != nil {
+		return fmt.Errorf("--oplog: %w", err)
 	}
 
 	daemonAddr := fmt.Sprintf("http://%s:%d",
