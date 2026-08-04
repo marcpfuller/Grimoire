@@ -58,14 +58,21 @@ func StripANSI(s string) string {
 	return ansiRe.ReplaceAllString(s, "")
 }
 
+// OplogEntry describes a single Ghostwriter oplog accessible to a service token.
+type OplogEntry struct {
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	ProjectID int    `json:"project_id"`
+}
+
 // Client implements grimsync.Pusher against a live Ghostwriter instance.
 type Client struct {
-	store          db.Store
-	url            string
-	token          string
-	http           *http.Client
-	logger         *slog.Logger
-	oplogByProject map[int]int // projectID → oplogID, populated by Init; nil until Init succeeds
+	store  db.Store
+	url    string
+	token  string
+	http   *http.Client
+	logger *slog.Logger
+	oplogs []OplogEntry // populated by Init; nil until Init succeeds
 }
 
 // New returns a Client. Call Init on the returned client before pushing commands.
@@ -81,15 +88,15 @@ func NewWithHTTP(store db.Store, url, token string, hc *http.Client, logger *slo
 	return &Client{store: store, url: url, token: token, http: hc, logger: logger}
 }
 
-// Init builds the projectID → oplogID map by querying all oplogs accessible to
-// the configured token. The result is cached; subsequent calls are no-ops.
+// Init fetches all oplogs accessible to the configured token and caches them.
+// The result is cached; subsequent calls are no-ops.
 //
 // Init must complete before any calls to PushCommand. Concurrent invocations
 // of Init and PushCommand are not safe.
 //
 // It returns *grimsync.AuthError for HTTP 401/403 or Hasura access-denied.
 func (c *Client) Init(ctx context.Context) error {
-	if c.oplogByProject != nil {
+	if c.oplogs != nil {
 		return nil // idempotent: already initialized
 	}
 	if c.url == "" || c.token == "" {
@@ -133,8 +140,9 @@ func (c *Client) Init(ctx context.Context) error {
 	var result struct {
 		Data struct {
 			Oplogs []struct {
-				ID        int `json:"id"`
-				ProjectID int `json:"projectId"`
+				ID        int    `json:"id"`
+				ProjectID int    `json:"projectId"`
+				Name      string `json:"name"`
 			} `json:"oplog"`
 		} `json:"data"`
 		Errors []gqlError `json:"errors"`
@@ -149,18 +157,21 @@ func (c *Client) Init(ctx context.Context) error {
 		return fmt.Errorf("ghostwriter: token has no accessible oplog; verify the token has OPLOG_RW access to at least one project oplog")
 	}
 
-	// Build map; first oplog wins when a project has more than one.
-	m := make(map[int]int, len(result.Data.Oplogs))
+	oplogs := make([]OplogEntry, 0, len(result.Data.Oplogs))
 	for _, o := range result.Data.Oplogs {
-		if _, exists := m[o.ProjectID]; !exists {
-			m[o.ProjectID] = o.ID
-		}
+		oplogs = append(oplogs, OplogEntry{ID: o.ID, Name: o.Name, ProjectID: o.ProjectID})
 	}
-	c.oplogByProject = m
+	c.oplogs = oplogs
 	if c.logger != nil {
-		c.logger.Info("ghostwriter: Init complete", "projects", len(m))
+		c.logger.Info("ghostwriter: Init complete", "oplogs", len(oplogs))
 	}
 	return nil
+}
+
+// Oplogs returns the list of oplogs discovered during Init.
+// Returns nil if Init has not been called.
+func (c *Client) Oplogs() []OplogEntry {
+	return c.oplogs
 }
 
 // PushCommand implements grimsync.Pusher. It loads the command's output chunks
@@ -176,8 +187,8 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 	if c.url == "" || c.token == "" {
 		return fmt.Errorf("ghostwriter: URL and Token must be configured")
 	}
-	if c.oplogByProject == nil {
-		return fmt.Errorf("ghostwriter: oplog map not initialized; call Init before pushing")
+	if c.oplogs == nil {
+		return fmt.Errorf("ghostwriter: oplog list not initialized; call Init before pushing")
 	}
 	if cmd.OplogID == 0 {
 		return fmt.Errorf("ghostwriter: command has no oplog ID; register pane with --oplog before pushing")
@@ -307,7 +318,7 @@ func msToRFC3339(ms int64) string {
 // projectId FK column (Hasura custom name for project_id) rather than the
 // project relationship, because the service role has column access but not
 // relationship-traversal access to rolodex_project.
-const initQuery = `{ oplog { id projectId } }`
+const initQuery = `{ oplog { id projectId name } }`
 
 // insertMutation is the Hasura GraphQL mutation used to create an OplogEntry.
 // The service token must have the OPLOG_RW preset on the target oplog; Hasura
