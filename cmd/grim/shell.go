@@ -39,11 +39,7 @@ var shellCmd = &cobra.Command{
 }
 
 func init() {
-	shellCmd.Flags().String("oplog", "", "Ghostwriter oplog ID (numeric) or name; commands are captured locally when omitted")
-	_ = shellCmd.RegisterFlagCompletionFunc("oplog", func(_ *cobra.Command, _ []string, _ string) ([]string, cobra.ShellCompDirective) {
-		// Suppress file completion — oplog values are free-form names or numeric IDs.
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	})
+	shellCmd.Flags().String("oplog", "", "Ghostwriter oplog ID or name; interactive selector shown when omitted")
 }
 
 func runShell(cmd *cobra.Command, _ []string) error {
