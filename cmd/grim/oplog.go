@@ -150,11 +150,16 @@ func fetchOplogs() ([]oplogEntry, error) {
 }
 
 // selectOplog presents an interactive huh.Select for the operator to pick an oplog.
-// Returns huh.ErrUserAborted when the user presses Escape or Ctrl+C.
+// Returns huh.ErrUserAborted when the user presses Escape, Ctrl+C, or selects Cancel.
 func selectOplog(oplogs []oplogEntry) (oplogEntry, error) {
-	options := make([]huh.Option[oplogEntry], len(oplogs))
-	for i, o := range oplogs {
-		options[i] = huh.NewOption(o.Name, o)
+	// Sentinel value for the explicit Cancel option (ID 0 is never a real oplog).
+	const cancelSentinel = -1
+	cancel := oplogEntry{ID: cancelSentinel}
+
+	options := make([]huh.Option[oplogEntry], 0, len(oplogs)+1)
+	options = append(options, huh.NewOption("Cancel", cancel))
+	for _, o := range oplogs {
+		options = append(options, huh.NewOption(o.Name, o))
 	}
 	var chosen oplogEntry
 	err := huh.NewSelect[oplogEntry]().
@@ -162,7 +167,13 @@ func selectOplog(oplogs []oplogEntry) (oplogEntry, error) {
 		Options(options...).
 		Value(&chosen).
 		Run()
-	return chosen, err
+	if err != nil {
+		return oplogEntry{}, err
+	}
+	if chosen.ID == cancelSentinel {
+		return oplogEntry{}, errSelectionAborted
+	}
+	return chosen, nil
 }
 
 // confirmLocalCapture shows a huh.Confirm asking whether to proceed with local capture.
