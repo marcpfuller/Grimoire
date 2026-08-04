@@ -58,7 +58,7 @@ func serviceManager() (service.Manager, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve home dir: %w", err)
 	}
-	configDest := filepath.Join(home, ".config", "grimoire", "config.yaml")
+	configDest := filepath.Join(home, ".grim", "config.yaml")
 	return service.New(bin, configDest)
 }
 

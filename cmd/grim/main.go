@@ -35,7 +35,7 @@ var rootCmd = &cobra.Command{
 
 func init() {
 	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "",
-		"path to config file (default: config/config.yaml)")
+		"path to config file (default: ~/.grim/config.yaml)")
 	rootCmd.AddCommand(shellCmd)
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(tagCmd)
@@ -54,10 +54,11 @@ func initConfig() error {
 	} else {
 		viper.SetConfigName("config")
 		viper.SetConfigType("yaml")
-		viper.AddConfigPath("config")
 		if home, err := os.UserHomeDir(); err == nil {
 			viper.AddConfigPath(filepath.Join(home, ".grim"))
+			viper.AddConfigPath(filepath.Join(home, ".config", "grimoire"))
 		}
+		viper.AddConfigPath("config")
 		viper.AddConfigPath(".")
 	}
 

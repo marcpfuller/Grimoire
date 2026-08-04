@@ -18,9 +18,9 @@ const systemdServiceName = "grimoire"
 // linuxManager implements Manager using a systemd user service.
 type linuxManager struct {
 	binPath    string // path to the grim binary
-	configPath string // canonical config: ~/.config/grimoire/config.yaml
+	configPath string // canonical config: ~/.grim/config.yaml
 	unitPath   string // ~/.config/systemd/user/grimoire.service
-	logPath    string // ~/.config/grimoire/grimoire.log
+	logPath    string // ~/.grim/grimoire.log
 }
 
 // New returns a Manager for Linux systemd.
@@ -33,7 +33,7 @@ func New(binPath, configPath string) (Manager, error) {
 		binPath:    binPath,
 		configPath: configPath,
 		unitPath:   filepath.Join(home, ".config", "systemd", "user", systemdServiceName+".service"),
-		logPath:    filepath.Join(home, ".config", "grimoire", "grimoire.log"),
+		logPath:    filepath.Join(home, ".grim", "grimoire.log"),
 	}, nil
 }
 

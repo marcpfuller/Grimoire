@@ -19,9 +19,9 @@ const (
 // darwinManager implements Manager using launchd LaunchAgents.
 type darwinManager struct {
 	binPath    string // path to the grim binary
-	configPath string // canonical config: ~/.config/grimoire/config.yaml
+	configPath string // canonical config: ~/.grim/config.yaml
 	plistPath  string // ~/Library/LaunchAgents/com.grimoire.daemon.plist
-	logPath    string // ~/.config/grimoire/grimoire.log
+	logPath    string // ~/.grim/grimoire.log
 }
 
 // New returns a Manager for macOS launchd.
@@ -37,7 +37,7 @@ func New(binPath, configPath string) (Manager, error) {
 		binPath:    binPath,
 		configPath: configPath,
 		plistPath:  filepath.Join(home, "Library", "LaunchAgents", launchdPlistName),
-		logPath:    filepath.Join(home, ".config", "grimoire", "grimoire.log"),
+		logPath:    filepath.Join(home, ".grim", "grimoire.log"),
 	}, nil
 }
 
