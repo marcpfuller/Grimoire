@@ -283,7 +283,7 @@ func realSelectTokenToDelete(opts []tokenSelectOption) (string, error) {
 				Options(options...).
 				Value(&chosen),
 		),
-	).Run()
+	).WithTheme(grimTheme()).Run()
 	if err != nil {
 		return "", err
 	}
