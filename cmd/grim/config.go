@@ -26,11 +26,24 @@ var configGetCmd = &cobra.Command{
 var configSetCmd = &cobra.Command{
 	Use:   "set <group.key> <value>",
 	Short: "Update a config key on the running daemon",
-	Args:  cobra.ExactArgs(2),
-	RunE:  runConfigSet,
+	Long: `Update a config key on the running daemon.
+
+For list keys (e.g. ghostwriter.tokens) use the dedicated flags:
+  --append  append a single value to the list
+  --del     interactively remove a value from the list
+
+Examples:
+  grim config set log.level debug
+  grim config set --append ghostwriter.tokens gwst_abc123
+  grim config set --del ghostwriter.tokens`,
+	Args: cobra.RangeArgs(1, 2),
+	RunE: runConfigSet,
 }
 
 func init() {
+	configSetCmd.Flags().Bool("append", false, "append <value> to a list key")
+	configSetCmd.Flags().Bool("del", false, "interactively remove a value from a list key")
+	configSetCmd.MarkFlagsMutuallyExclusive("append", "del")
 	configCmd.AddCommand(configGetCmd)
 	configCmd.AddCommand(configSetCmd)
 }
@@ -104,7 +117,44 @@ func runConfigGet(_ *cobra.Command, args []string) error {
 	return nil
 }
 
-func runConfigSet(_ *cobra.Command, args []string) error {
+func runConfigSet(cmd *cobra.Command, args []string) error {
+	isAppend, _ := cmd.Flags().GetBool("append")
+	isDel, _ := cmd.Flags().GetBool("del")
+
+	// --- --del: interactively remove a value from a list key ---
+	if isDel {
+		if len(args) != 1 {
+			return fmt.Errorf("config set --del requires exactly one argument (group.key), got %d", len(args))
+		}
+		if args[0] != "ghostwriter.tokens" {
+			return fmt.Errorf("config set --del: %q is not a list key", args[0])
+		}
+		return runDeleteToken(tokenDeleteDeps{
+			getConfig:  realGetGWConfig,
+			discoverFn: discoverOplogsForToken,
+			selectFn:   realSelectTokenToDelete,
+			postTokens: realPostTokens,
+		})
+	}
+
+	// --- --append: add a value to a list key ---
+	if isAppend {
+		if len(args) != 2 {
+			return fmt.Errorf("config set --append requires group.key and value, got %d arg(s)", len(args))
+		}
+		if args[0] != "ghostwriter.tokens" {
+			return fmt.Errorf("config set --append: %q is not a list key", args[0])
+		}
+		return runAppendToken(args[1], tokenAppendDeps{
+			getConfig:  realGetGWConfig,
+			postTokens: realPostTokens,
+		})
+	}
+
+	// --- scalar set (existing behaviour) ---
+	if len(args) != 2 {
+		return fmt.Errorf("config set requires group.key and value; use --append or --del for list keys")
+	}
 	dotKey, value := args[0], args[1]
 
 	parts := strings.SplitN(dotKey, ".", 2)
