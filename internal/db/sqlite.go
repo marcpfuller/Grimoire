@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/atrox/haikunatorgo"
 	_ "modernc.org/sqlite"
 )
 
@@ -146,6 +147,8 @@ type migration struct {
 //	7: add oplog_id column to panes (replaces project_id for GW routing).
 //	8: add oplog_name column to panes for oplog display name snapshot.
 //	9: drop project_id column from panes.
+//	10: add name column to panes for a readable haikunator-based display name,
+//	    backfilling any pre-existing rows left with the empty default.
 var migrations = []migration{
 	{
 		version: 1,
@@ -192,6 +195,10 @@ var migrations = []migration{
 	{
 		version: 9,
 		fn:      dropColumnIfPresent("panes", "project_id"),
+	},
+	{
+		version: 10,
+		fn:      addPaneNameColumn,
 	},
 }
 
@@ -276,6 +283,67 @@ func addColumnIfMissing(table, column, definition string) func(*sql.DB) error {
 	}
 }
 
+// addPaneNameColumn adds the name column to panes (if missing) and backfills
+// a readable haikunator-based name for any existing rows left with the empty
+// default, so panes created before this migration still get a display name.
+func addPaneNameColumn(db *sql.DB) error {
+	if err := addColumnIfMissing("panes", "name", "TEXT NOT NULL DEFAULT ''")(db); err != nil {
+		return err
+	}
+
+	// Drain and explicitly close rows before calling Exec — with
+	// SetMaxOpenConns(1) calling Exec while a cursor is open deadlocks.
+	rows, err := db.Query(`SELECT id FROM panes WHERE name = ''`)
+	if err != nil {
+		return fmt.Errorf("select panes missing name: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close() //nolint:sqlclosecheck // explicit close required; defer would leave cursor open during subsequent db.Exec, deadlocking SetMaxOpenConns(1)
+			return fmt.Errorf("scan pane id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	for _, id := range ids {
+		if _, err := db.Exec(`UPDATE panes SET name = ? WHERE id = ?`, paneName(id), id); err != nil {
+			return fmt.Errorf("backfill pane name %s: %w", id, err)
+		}
+	}
+	return nil
+}
+
+// paneName returns a readable, stable display name for a pane: a
+// haikunator-style adjective-noun pair followed by the last 4 characters of
+// paneID (e.g. "quiet-star-0718"). paneID is normally a 16-char crypto/rand
+// hex string (see cmd/grim generatePaneID); the suffix keeps the name
+// traceable back to its underlying ID without needing all 16 characters, and
+// guarantees two panes never produce an identical name even if haikunator
+// happens to pick the same word pair.
+//
+// math/rand (via haikunatorgo) is used intentionally here: this name is a
+// cosmetic display label, not a credential or identifier relied on for
+// security or uniqueness — the pane's actual identity remains paneID.
+func paneName(paneID string) string {
+	h := haikunator.New()
+	h.TokenLength = 0
+	words := h.Haikunate()
+
+	suffix := paneID
+	if len(paneID) > 4 {
+		suffix = paneID[len(paneID)-4:]
+	}
+	if words == "" {
+		return suffix
+	}
+	return words + h.Delimiter + suffix
+}
+
 // applyMigrations reads PRAGMA user_version and runs any pending migrations in
 // order, advancing user_version after each one. The version integer is stored
 // in the SQLite file header — no schema table is required.
@@ -321,23 +389,23 @@ func applyMigrations(db *sql.DB) error {
 // preserved unchanged. Oplog context is not expected to change mid-session.
 func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO panes (id, oplog_id, oplog_name, created_at, width, height) VALUES (?, ?, ?, ?, ?, ?)`,
-		paneID, oplogID, oplogName, createdAt, width, height,
+		`INSERT OR IGNORE INTO panes (id, oplog_id, oplog_name, created_at, width, height, name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		paneID, oplogID, oplogName, createdAt, width, height, paneName(paneID),
 	)
 	return err
 }
 
 func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error {
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO panes (id, oplog_id, oplog_name, created_at, width, height) VALUES (?, ?, ?, ?, ?, ?)`,
-		paneID, oplogID, oplogName, createdAt, width, height,
+		`INSERT INTO panes (id, oplog_id, oplog_name, created_at, width, height, name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		paneID, oplogID, oplogName, createdAt, width, height, paneName(paneID),
 	)
 	return err
 }
 
 func (s *sqliteStore) ListPanes(ctx context.Context) (panes []*Pane, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT id, oplog_id, oplog_name, created_at, width, height FROM panes ORDER BY created_at DESC`,
+		`SELECT id, name, oplog_id, oplog_name, created_at, width, height FROM panes ORDER BY created_at DESC`,
 	)
 	if qErr != nil {
 		return nil, qErr
@@ -350,7 +418,7 @@ func (s *sqliteStore) ListPanes(ctx context.Context) (panes []*Pane, err error) 
 
 	for rows.Next() {
 		p := &Pane{}
-		if err = rows.Scan(&p.ID, &p.OplogID, &p.OplogName, &p.CreatedAt, &p.Width, &p.Height); err != nil {
+		if err = rows.Scan(&p.ID, &p.Name, &p.OplogID, &p.OplogName, &p.CreatedAt, &p.Width, &p.Height); err != nil {
 			return nil, err
 		}
 		panes = append(panes, p)
@@ -362,9 +430,9 @@ func (s *sqliteStore) ListPanes(ctx context.Context) (panes []*Pane, err error) 
 func (s *sqliteStore) GetPane(ctx context.Context, paneID string) (*Pane, error) {
 	p := &Pane{}
 	err := s.db.QueryRowContext(ctx,
-		`SELECT id, oplog_id, oplog_name, created_at, width, height FROM panes WHERE id = ?`,
+		`SELECT id, name, oplog_id, oplog_name, created_at, width, height FROM panes WHERE id = ?`,
 		paneID,
-	).Scan(&p.ID, &p.OplogID, &p.OplogName, &p.CreatedAt, &p.Width, &p.Height)
+	).Scan(&p.ID, &p.Name, &p.OplogID, &p.OplogName, &p.CreatedAt, &p.Width, &p.Height)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

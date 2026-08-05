@@ -1,14 +1,16 @@
 import { useState, useMemo } from 'react'
 import type { Command } from '../../api/types'
 import { highlightText } from '../../utils/text'
+import { resolvePaneName } from '../../utils/paneName'
 
 export interface SearchPanelProps {
   allCommands: Command[]
+  paneNameById: Record<string, string>
   selectedCmdId: string
   setSelectedCmdId: (id: string) => void
 }
 
-export function SearchPanel({ allCommands, selectedCmdId, setSelectedCmdId }: SearchPanelProps) {
+export function SearchPanel({ allCommands, paneNameById, selectedCmdId, setSelectedCmdId }: SearchPanelProps) {
   const [searchQuery, setSearchQuery] = useState('')
 
   const filteredCommands = useMemo(() => {
@@ -18,9 +20,9 @@ export function SearchPanel({ allCommands, selectedCmdId, setSelectedCmdId }: Se
       cmd =>
         cmd.command.toLowerCase().includes(q) ||
         cmd.id.toLowerCase().includes(q) ||
-        cmd.paneId.toLowerCase().includes(q)
+        resolvePaneName(paneNameById, cmd.paneId).toLowerCase().includes(q)
     )
-  }, [searchQuery, allCommands])
+  }, [searchQuery, allCommands, paneNameById])
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -43,7 +45,9 @@ export function SearchPanel({ allCommands, selectedCmdId, setSelectedCmdId }: Se
             <div className="flex flex-col w-full min-w-0">
               <div className="flex items-center justify-between w-full mb-1">
                 <span className="font-code text-[11px] text-vscode-accent">{highlightText(cmd.id, searchQuery)}</span>
-                <span className="text-[10px] text-vscode-text-muted">{highlightText(cmd.paneId, searchQuery)}</span>
+                <span className="text-[10px] text-vscode-text-muted">
+                  {highlightText(resolvePaneName(paneNameById, cmd.paneId), searchQuery)}
+                </span>
               </div>
               <span className="truncate font-code text-[11px] opacity-80">{highlightText(cmd.command, searchQuery)}</span>
             </div>

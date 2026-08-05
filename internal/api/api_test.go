@@ -605,9 +605,9 @@ func TestHandleGetSessions(t *testing.T) {
 			},
 		},
 		{
-			name: "session_id_and_name_both_equal_pane_id",
+			name: "session_name_uses_pane_name_not_id",
 			setupStore: func(m *dbmocks.MockStore) {
-				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{{ID: "pane-abc123"}}, nil)
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{{ID: "pane-abc123", Name: "quiet-star-c123"}}, nil)
 				m.EXPECT().ListCommandsByPane(mock.Anything, "pane-abc123").Return([]*db.Command{}, nil)
 			},
 			wantStatus: http.StatusOK,
@@ -616,7 +616,7 @@ func TestHandleGetSessions(t *testing.T) {
 				require.NoError(t, json.NewDecoder(w.Body).Decode(&sessions))
 				require.Len(t, sessions, 1)
 				assert.Equal(t, "pane-abc123", sessions[0]["id"])
-				assert.Equal(t, "pane-abc123", sessions[0]["name"])
+				assert.Equal(t, "quiet-star-c123", sessions[0]["name"])
 			},
 		},
 		{

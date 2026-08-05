@@ -13,6 +13,7 @@ import { useSessions } from './hooks/useSessions'
 import { useTagsData } from './hooks/useTagsData'
 import { useConfigData } from './hooks/useConfigData'
 import { useToasts } from './hooks/useToasts'
+import { buildPaneNameMap } from './utils/paneName'
 
 export default function App() {
   const [activeView, setActiveView] = useState<ActiveView>('sessions')
@@ -25,6 +26,7 @@ export default function App() {
   const sessions = useSessions()
   const tags = useTagsData()
   const allCommands = useMemo(() => sessions.flatMap(s => s.commands), [sessions])
+  const paneNameById = useMemo(() => buildPaneNameMap(sessions), [sessions])
   const { config, updateConfig } = useConfigData()
   const { toasts, removeToast, addToast } = useToasts()
 
@@ -58,6 +60,7 @@ export default function App() {
           setSelectedCmdId={setSelectedCmdId}
           tags={tags}
           allCommands={allCommands}
+          paneNameById={paneNameById}
           config={config}
           selectedSetting={selectedSetting}
           setSelectedSetting={setSelectedSetting}
