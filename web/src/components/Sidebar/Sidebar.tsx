@@ -13,6 +13,7 @@ export interface SidebarProps {
   setSelectedCmdId: (id: string) => void
   tags: Tag[]
   allCommands: Command[]
+  paneNameById: Record<string, string>
   config: AppConfig | null
   selectedSetting: SelectedSetting | null
   setSelectedSetting: (s: SelectedSetting) => void
@@ -28,6 +29,7 @@ export function Sidebar({
   setSelectedCmdId,
   tags,
   allCommands,
+  paneNameById,
   config,
   selectedSetting,
   setSelectedSetting,
@@ -51,10 +53,15 @@ export function Sidebar({
         />
       )}
       {activeView === 'tags' && (
-        <TagList tags={tags} selectedCmdId={selectedCmdId} setSelectedCmdId={setSelectedCmdId} />
+        <TagList tags={tags} paneNameById={paneNameById} selectedCmdId={selectedCmdId} setSelectedCmdId={setSelectedCmdId} />
       )}
       {activeView === 'search' && (
-        <SearchPanel allCommands={allCommands} selectedCmdId={selectedCmdId} setSelectedCmdId={setSelectedCmdId} />
+        <SearchPanel
+          allCommands={allCommands}
+          paneNameById={paneNameById}
+          selectedCmdId={selectedCmdId}
+          setSelectedCmdId={setSelectedCmdId}
+        />
       )}
       {activeView === 'settings' && (
         <SettingsNav config={config} selectedSetting={selectedSetting} setSelectedSetting={setSelectedSetting} />

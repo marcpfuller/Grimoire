@@ -531,7 +531,7 @@ func (s *Server) handleGetSessions(w http.ResponseWriter, r *http.Request) {
 		}
 		sessions = append(sessions, SessionResponse{
 			ID:       p.ID,
-			Name:     p.ID,
+			Name:     p.Name,
 			Commands: commands,
 		})
 	}

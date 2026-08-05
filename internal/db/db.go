@@ -15,6 +15,7 @@ var (
 // Pane represents a terminal pane session anchored by GRIMOIRE_PANE_ID.
 type Pane struct {
 	ID        string
+	Name      string // readable display name, e.g. "quiet-star-0718"; generated once at creation
 	OplogID   int    // Ghostwriter oplog ID this pane writes to (0 = unset)
 	OplogName string // oplog display name, snapshot at registration time
 	CreatedAt int64  // Unix ms

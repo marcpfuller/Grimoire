@@ -1,13 +1,15 @@
 import { useState, useMemo } from 'react'
 import type { Tag } from '../../api/types'
+import { resolvePaneName } from '../../utils/paneName'
 
 export interface TagListProps {
   tags: Tag[]
+  paneNameById: Record<string, string>
   selectedCmdId: string
   setSelectedCmdId: (id: string) => void
 }
 
-export function TagList({ tags, selectedCmdId, setSelectedCmdId }: TagListProps) {
+export function TagList({ tags, paneNameById, selectedCmdId, setSelectedCmdId }: TagListProps) {
   const [expandedTags, setExpandedTags] = useState<Record<string, boolean>>({})
 
   const toggleTag = (label: string) =>
@@ -49,7 +51,7 @@ export function TagList({ tags, selectedCmdId, setSelectedCmdId }: TagListProps)
                   <div className="flex flex-col w-full min-w-0">
                     <div className="flex items-center justify-between w-full">
                       <span className="font-code text-[11px] text-vscode-accent">{tag.shortId}</span>
-                      <span className="text-[10px] text-vscode-text-muted">{tag.paneId}</span>
+                      <span className="text-[10px] text-vscode-text-muted">{resolvePaneName(paneNameById, tag.paneId)}</span>
                     </div>
                     <span className="truncate font-code text-[11px] opacity-80 mt-0.5">
                       {tag.commandText.length > 50 ? `${tag.commandText.substring(0, 50)}...` : tag.commandText}

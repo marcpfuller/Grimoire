@@ -166,6 +166,7 @@ func selectOplog(oplogs []oplogEntry) (oplogEntry, error) {
 		Title("Select Ghostwriter oplog").
 		Options(options...).
 		Value(&chosen).
+		WithTheme(grimTheme()).
 		Run()
 	if err != nil {
 		return oplogEntry{}, err
@@ -182,6 +183,7 @@ func confirmLocalCapture(msg string) (bool, error) {
 	err := huh.NewConfirm().
 		Title(msg).
 		Value(&ok).
+		WithTheme(grimTheme()).
 		Run()
 	return ok, err
 }

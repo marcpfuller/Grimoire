@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -43,6 +44,77 @@ func TestUpsertPane(t *testing.T) {
 
 	// Second call (daemon restart scenario) must not error.
 	require.NoError(t, s.UpsertPane(ctx, "pane-001", 0, "", 2000, 220, 50), "upsert on existing pane must succeed")
+}
+
+func TestListPanes(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	t.Run("empty_returns_nil_slice", func(t *testing.T) {
+		panes, err := s.ListPanes(ctx)
+		require.NoError(t, err)
+		assert.Nil(t, panes)
+	})
+
+	t.Run("returns_all_panes_newest_first_with_name", func(t *testing.T) {
+		require.NoError(t, s.CreatePane(ctx, "pane-older0000001", 0, "", 1000, 220, 50))
+		require.NoError(t, s.CreatePane(ctx, "pane-newer0000002", 0, "", 2000, 220, 50))
+
+		panes, err := s.ListPanes(ctx)
+		require.NoError(t, err)
+		require.Len(t, panes, 2)
+		assert.Equal(t, "pane-newer0000002", panes[0].ID, "newest pane must come first")
+		assert.NotEmpty(t, panes[0].Name)
+		assert.True(t, strings.HasSuffix(panes[0].Name, "0002"))
+		assert.NotEmpty(t, panes[1].Name)
+		assert.True(t, strings.HasSuffix(panes[1].Name, "0001"))
+	})
+}
+
+func TestPaneName(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	t.Run("generated_on_create_and_ends_with_last_4_hex_chars", func(t *testing.T) {
+		paneID := "a1b2c3d4e5f60718"
+		require.NoError(t, s.CreatePane(ctx, paneID, 0, "", 1000, 220, 50))
+
+		p, err := s.GetPane(ctx, paneID)
+		require.NoError(t, err)
+		assert.NotEmpty(t, p.Name, "pane name must be generated")
+		assert.True(t, strings.HasSuffix(p.Name, "0718"), "name %q must end with the pane id's last 4 hex chars", p.Name)
+		assert.Regexp(t, `^[a-z]+-[a-z]+-0718$`, p.Name, "name must be adjective-noun-suffix")
+	})
+
+	t.Run("stable_across_upsert_reregistration", func(t *testing.T) {
+		paneID := "b2c3d4e5f6071829"
+		require.NoError(t, s.UpsertPane(ctx, paneID, 0, "", 1000, 220, 50))
+		first, err := s.GetPane(ctx, paneID)
+		require.NoError(t, err)
+
+		// Simulated daemon restart: shell re-registers with the same pane ID.
+		require.NoError(t, s.UpsertPane(ctx, paneID, 0, "", 2000, 220, 50))
+		second, err := s.GetPane(ctx, paneID)
+		require.NoError(t, err)
+
+		assert.Equal(t, first.Name, second.Name, "name must not change on re-registration")
+	})
+
+	t.Run("distinct_pane_ids_can_share_word_pair_but_not_full_name", func(t *testing.T) {
+		// Regression guard: the suffix must vary with the pane id so two panes
+		// never collide even if haikunator picks the same adjective/noun pair.
+		require.NoError(t, s.CreatePane(ctx, "0000000000001111", 0, "", 1000, 220, 50))
+		require.NoError(t, s.CreatePane(ctx, "0000000000002222", 0, "", 1000, 220, 50))
+
+		p1, err := s.GetPane(ctx, "0000000000001111")
+		require.NoError(t, err)
+		p2, err := s.GetPane(ctx, "0000000000002222")
+		require.NoError(t, err)
+
+		assert.NotEqual(t, p1.Name, p2.Name)
+		assert.True(t, strings.HasSuffix(p1.Name, "1111"))
+		assert.True(t, strings.HasSuffix(p2.Name, "2222"))
+	})
 }
 
 // --- Commands ---
@@ -690,4 +762,38 @@ func TestMigrationV2V3WidthHeight(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 160, p.Width)
 	assert.Equal(t, 48, p.Height)
+}
+
+func TestMigrationV10PaneNameBackfill(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "migration_v10.db")
+
+	// Bootstrap at latest (name column exists, default '').
+	s1, err := db.Open(path)
+	require.NoError(t, err)
+
+	// Insert a pane directly via raw SQL with name left at its default empty
+	// string, simulating a row that existed before this migration ran (the
+	// column exists — same as a real upgrade — but no name was ever backfilled).
+	rawDB, err := db.OpenRawForTest(path)
+	require.NoError(t, err)
+	_, err = rawDB.Exec(
+		`INSERT INTO panes (id, oplog_id, oplog_name, created_at, width, height, name) VALUES (?, 0, '', 1000, 220, 50, '')`,
+		"legacy-pane-0000000000abcd",
+	)
+	require.NoError(t, err, "insert legacy pane row")
+	_, err = rawDB.Exec("PRAGMA user_version = 9")
+	require.NoError(t, err, "wind back to pre-migration-10 version")
+	require.NoError(t, rawDB.Close())
+	require.NoError(t, s1.Close())
+
+	// Re-open: migration 10 must backfill the empty name.
+	s2, err := db.Open(path)
+	require.NoError(t, err)
+	defer s2.Close() //nolint:errcheck
+
+	p, err := s2.GetPane(context.Background(), "legacy-pane-0000000000abcd")
+	require.NoError(t, err)
+	assert.NotEmpty(t, p.Name, "legacy pane must have a backfilled name")
+	assert.True(t, strings.HasSuffix(p.Name, "abcd"), "backfilled name %q must end with last 4 chars of id", p.Name)
 }
