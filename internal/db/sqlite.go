@@ -385,14 +385,37 @@ func applyMigrations(db *sql.DB) error {
 // or silently succeeds if already registered. Safe to call on daemon restart
 // when the shell still holds its original GRIMOIRE_PANE_ID.
 //
+// name is an optional user-supplied display name. After trimming whitespace:
+// blank falls back to the auto-generated haikunator name (paneName); a name
+// longer than MaxPaneNameLength is rejected with ErrNameTooLong rather than
+// silently truncated, so the caller (e.g. the CLI) can surface a clear error.
+//
 // INSERT OR IGNORE: if the pane is already registered the existing row is
 // preserved unchanged. Oplog context is not expected to change mid-session.
-func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error {
-	_, err := s.db.ExecContext(ctx,
+func (s *sqliteStore) UpsertPane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int, name string) error {
+	resolvedName, err := resolvePaneName(paneID, name)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO panes (id, oplog_id, oplog_name, created_at, width, height, name) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		paneID, oplogID, oplogName, createdAt, width, height, paneName(paneID),
+		paneID, oplogID, oplogName, createdAt, width, height, resolvedName,
 	)
 	return err
+}
+
+// resolvePaneName trims name and returns it if non-blank and within
+// MaxPaneNameLength, otherwise generates an auto name via paneName(paneID).
+// Returns ErrNameTooLong if the trimmed name is too long.
+func resolvePaneName(paneID, name string) (string, error) {
+	trimmed := strings.TrimSpace(name)
+	if len(trimmed) > MaxPaneNameLength {
+		return "", ErrNameTooLong
+	}
+	if trimmed == "" {
+		return paneName(paneID), nil
+	}
+	return trimmed, nil
 }
 
 func (s *sqliteStore) CreatePane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error {

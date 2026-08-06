@@ -8,7 +8,33 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/marcpfuller/grimoire/internal/db"
 )
+
+func TestValidatePaneName(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+	}{
+		{"empty is valid (auto-generated)", "", false},
+		{"whitespace-only is valid (auto-generated)", "   ", false},
+		{"at max length is valid", strings.Repeat("a", db.MaxPaneNameLength), false},
+		{"over max length is rejected", strings.Repeat("a", db.MaxPaneNameLength+1), true},
+		{"typical short name is valid", "recon-box", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePaneName(tt.input)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
 
 // minimalRootCmd returns a minimal cobra command tree representative of grim
 // for use in buildShellInit tests. Using the real rootCmd would require full
