@@ -58,3 +58,6 @@ web/src/api/generated.ts
 
 # Agents directory
 .github/agents/
+
+# Conductor 
+.worktreeinclude

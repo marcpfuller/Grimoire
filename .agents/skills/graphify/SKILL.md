@@ -9,12 +9,15 @@ Load only the runbook required by the request.
 
 ## Route the Operation
 
-- Existing graph plus a natural-language codebase question: read
-  `references/query.md` and query `graphify-out/graph.json`. Do not rebuild.
-- `query`, `path`, `explain`, or result feedback: read `references/query.md`.
-- New graph build or full pipeline: read
+- Routine code-only graph ensure or incremental update: run
+  `scripts/ensure-code-graph.sh` without loading a build/update runbook.
+- Existing graph plus a focused natural-language codebase question: run
+  `scripts/query-compact.sh` with exact source symbols and a bounded budget.
+- Vocabulary expansion, `path`, `explain`, or result feedback: read
+  `references/query.md`.
+- Semantic or explicitly customized new graph build: read
   `references/build-and-operations.md`, then load only the references it routes to.
-- Incremental update or clustering: read `references/update.md`.
+- Semantic incremental update or clustering: read `references/update.md`.
 - GitHub cloning or multi-repository merge: read `references/github-and-merge.md`.
 - Video or audio transcription: read `references/transcribe.md`.
 - Optional exports: read `references/exports.md`.
@@ -24,6 +27,18 @@ Load only the runbook required by the request.
 If no path is supplied for an explicit build, use the current directory. If
 `graphify-out/graph.json` already exists, prefer querying it unless the user requests
 an update or rebuild.
+
+Common code-only commands:
+
+```bash
+.agents/skills/graphify/scripts/ensure-code-graph.sh --source-root .
+.agents/skills/graphify/scripts/query-compact.sh \
+  --graph graphify-out/graph.json --budget 800 '<focused query>'
+```
+
+The scripts keep full logs under `.context/graphify` and emit concise status or
+bounded query output. Load the longer references only when the requested operation
+cannot be represented by these interfaces.
 
 ## Installation Boundary
 
