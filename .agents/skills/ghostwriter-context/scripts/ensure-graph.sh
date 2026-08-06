@@ -13,23 +13,6 @@ resolve_dir() {
     (cd "$1" 2>/dev/null && pwd -P)
 }
 
-valid_graph() {
-    local output_root=$1
-    local graph_root="$output_root/graphify-out"
-    [[ -s "$graph_root/graph.json" ]] || return 1
-    [[ -s "$graph_root/.graphify_root" ]] || return 1
-    [[ "$(resolve_dir "$(<"$graph_root/.graphify_root")")" == "$source_root" ]]
-}
-
-emit_result() {
-    local status=$1
-    local output_root=$2
-    printf 'GRAPHIFY_STATUS=%s\n' "$status"
-    printf 'GRAPHIFY_SOURCE_ROOT=%s\n' "$source_root"
-    printf 'GRAPHIFY_REVISION=%s\n' "$revision"
-    printf 'GRAPHIFY_GRAPH=%s\n' "$output_root/graphify-out/graph.json"
-}
-
 [[ -d "$source_root" ]] || fail "Ghostwriter repository not found: $source_root"
 source_root=$(resolve_dir "$source_root") || fail "cannot resolve repository: $source_root"
 git -C "$source_root" rev-parse --is-inside-work-tree >/dev/null 2>&1 ||
@@ -40,42 +23,26 @@ if [[ -n "$(git -C "$source_root" status --porcelain)" ]]; then
 fi
 
 revision=$(git -C "$source_root" rev-parse HEAD)
-
-if valid_graph "$source_root"; then
-    emit_result "reused-repository" "$source_root"
-    exit 0
-fi
-
+repo_graph="$source_root/graphify-out/graph.json"
+repo_marker="$source_root/graphify-out/.graphify_root"
 output_root="$cache_root/ghostwriter/$revision"
-if valid_graph "$output_root"; then
-    emit_result "reused-cache" "$output_root"
-    exit 0
+
+if [[ -s "$repo_graph" && -s "$repo_marker" ]] &&
+    [[ "$(resolve_dir "$(<"$repo_marker")")" == "$source_root" ]]; then
+    output_root=$source_root
 fi
 
-command -v graphify >/dev/null 2>&1 ||
-    fail "graphify is not installed; install or enable it before gathering Ghostwriter context"
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+ensure_script="$script_dir/../../graphify/scripts/ensure-code-graph.sh"
+[[ -x "$ensure_script" ]] || fail "missing Graphify ensure script: $ensure_script"
 
-mkdir -p "$output_root"
-lock_dir="$output_root/.ensure-graph.lock"
-waited=0
-until mkdir "$lock_dir" 2>/dev/null; do
-    if valid_graph "$output_root"; then
-        emit_result "reused-cache" "$output_root"
-        exit 0
-    fi
-    ((waited += 1))
-    if ((waited >= 600)); then
-        fail "timed out waiting for another Graphify build: $lock_dir"
-    fi
-    sleep 1
-done
-trap 'rmdir "$lock_dir" 2>/dev/null || true' EXIT
+result=$(
+    "$ensure_script" \
+        --source-root "$source_root" \
+        --output-root "$output_root" \
+        --immutable \
+        --label "ghostwriter-$revision"
+)
 
-if valid_graph "$output_root"; then
-    emit_result "reused-cache" "$output_root"
-    exit 0
-fi
-
-graphify extract "$source_root" --out "$output_root" --code-only --timing
-valid_graph "$output_root" || fail "Graphify completed without a valid graph for $source_root"
-emit_result "built" "$output_root"
+printf 'GHOSTWRITER_REVISION=%s\n' "$revision"
+printf '%s\n' "$result"

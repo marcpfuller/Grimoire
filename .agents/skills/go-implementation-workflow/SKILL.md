@@ -37,8 +37,10 @@ Then select the smallest dependency-context path that answers the task:
    gate; do not repeat its source or graph work.
 2. If focused local search establishes the behavior, record dependency analysis as
    not applicable with one sentence.
-3. If an existing `graphify-out/graph.json` can answer a broad cross-file question,
-   invoke `$graphify` in query mode rather than rebuilding or rereading the corpus.
+3. For a broad local cross-file question, invoke `$graphify`, run its code-graph
+   ensure script, then use its compact query script with exact source symbols and a
+   bounded budget. Do not load Graphify build/update references for this routine
+   path.
 4. If behavior depends on undocumented third-party internals, invoke `$opensrc` for
    the exact project-selected version.
 5. If the task needs a relationship graph across dependency internals, invoke

@@ -19,8 +19,9 @@ From the Grimoire repository root, run:
 The script resolves `GHOSTWRITER_REPO`, defaulting to
 `~/dev/myrepos/Ghostwriter`, and records the exact Git commit. It reuses a valid
 repo-local `graphify-out`, then a revision-keyed shared cache, and otherwise runs a
-code-only Graphify build. Code-only extraction is deterministic and does not spend
-semantic LLM tokens. The script does not install or upgrade Graphify.
+code-only Graphify build through the generic Graphify ensure script. Code-only
+extraction is deterministic and does not spend semantic LLM tokens. The script does
+not install or upgrade Graphify.
 
 Treat a non-zero exit as a context blocker. Do not silently continue with a missing,
 dirty, or ambiguous source tree.
@@ -29,8 +30,11 @@ dirty, or ambiguous source tree.
 
 1. Derive one focused cross-repository question from the Grimoire call site and the
    requested change.
-2. Invoke `$graphify` in query mode against the absolute `GRAPHIFY_GRAPH` emitted by
-   the script. Use a bounded query budget; start at 1200 tokens.
+2. Run `.agents/skills/graphify/scripts/query-compact.sh` against the absolute
+   `GRAPHIFY_GRAPH` emitted by the script. Form the query from exact Ghostwriter
+   symbols and vocabulary found at the Grimoire boundary; start with its default
+   800-token budget. Load `$graphify` query references only for advanced expansion,
+   path, explain, or result-feedback flows.
 3. Verify important graph paths against the Ghostwriter source files and tests at
    `GRAPHIFY_SOURCE_ROOT`. Graph edges are static evidence, not runtime proof.
 4. Read only documentation directly relevant to the contract under investigation.
