@@ -126,6 +126,7 @@ type registerRequest struct {
 	OplogName string `json:"oplog_name"`
 	Width     int    `json:"width"`
 	Height    int    `json:"height"`
+	Name      string `json:"name"`
 }
 
 type executeRequest struct {
@@ -232,7 +233,11 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	if req.Height <= 0 {
 		req.Height = 50
 	}
-	if err := s.store.UpsertPane(r.Context(), req.PaneID, req.OplogID, req.OplogName, time.Now().UnixMilli(), req.Width, req.Height); err != nil {
+	if err := s.store.UpsertPane(r.Context(), req.PaneID, req.OplogID, req.OplogName, time.Now().UnixMilli(), req.Width, req.Height, req.Name); err != nil {
+		if errors.Is(err, db.ErrNameTooLong) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("name exceeds %d character limit", db.MaxPaneNameLength))
+			return
+		}
 		s.logWarn("register: UpsertPane failed", "pane_id", req.PaneID, "err", err)
 		writeError(w, http.StatusInternalServerError, "failed to register pane")
 		return

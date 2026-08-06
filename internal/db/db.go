@@ -10,7 +10,14 @@ var (
 	ErrNotFound     = errors.New("db: record not found")
 	ErrConflict     = errors.New("db: short_id already in use")
 	ErrDuplicateTag = errors.New("db: tag label already applied to this command")
+	ErrNameTooLong  = errors.New("db: pane name exceeds maximum length")
 )
+
+// MaxPaneNameLength is the maximum number of characters allowed in a
+// user-supplied pane name (see UpsertPane). Enforced here so both the CLI
+// (fail-fast before a shell is spawned) and the store (defense in depth for
+// any other caller) agree on the same limit.
+const MaxPaneNameLength = 20
 
 // Pane represents a terminal pane session anchored by GRIMOIRE_PANE_ID.
 type Pane struct {
@@ -90,7 +97,11 @@ type Store interface {
 	// silently succeeds if already registered. This makes re-registration safe
 	// when the daemon restarts mid-session and the shell still holds its
 	// original GRIMOIRE_PANE_ID.
-	UpsertPane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error
+	//
+	// name is an optional user-supplied display name (e.g. via `grim shell
+	// --name`). If blank (after trimming whitespace), a name is generated
+	// automatically. Returns ErrNameTooLong if name exceeds MaxPaneNameLength.
+	UpsertPane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int, name string) error
 	CreatePane(ctx context.Context, paneID string, oplogID int, oplogName string, createdAt int64, width, height int) error
 	GetPane(ctx context.Context, paneID string) (*Pane, error)
 	ListPanes(ctx context.Context) ([]*Pane, error)

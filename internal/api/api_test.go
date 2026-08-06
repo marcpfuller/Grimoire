@@ -382,7 +382,7 @@ func TestHandleRegister(t *testing.T) {
 			name: "missing_oplog_id_defaults_zero",
 			body: map[string]any{"pane_id": "pane1"},
 			setupStore: func(m *dbmocks.MockStore) {
-				m.On("UpsertPane", mock.Anything, "pane1", 0, "", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+				m.On("UpsertPane", mock.Anything, "pane1", 0, "", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int"), "").
 					Return(nil).Once()
 			},
 			wantStatus: http.StatusNoContent,
@@ -391,16 +391,34 @@ func TestHandleRegister(t *testing.T) {
 			name: "upsert_fails",
 			body: map[string]any{"pane_id": "pane1", "oplog_id": 1},
 			setupStore: func(m *dbmocks.MockStore) {
-				m.On("UpsertPane", mock.Anything, "pane1", 1, "", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+				m.On("UpsertPane", mock.Anything, "pane1", 1, "", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int"), "").
 					Return(errors.New("db error")).Once()
 			},
 			wantStatus: http.StatusInternalServerError,
 		},
 		{
+			name: "name_too_long",
+			body: map[string]any{"pane_id": "pane1", "name": "this-name-is-way-too-long-to-fit"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.On("UpsertPane", mock.Anything, "pane1", 0, "", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int"), "this-name-is-way-too-long-to-fit").
+					Return(db.ErrNameTooLong).Once()
+			},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
 			name: "success",
 			body: map[string]any{"pane_id": "pane1", "oplog_id": 1},
 			setupStore: func(m *dbmocks.MockStore) {
-				m.On("UpsertPane", mock.Anything, "pane1", 1, "", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int")).
+				m.On("UpsertPane", mock.Anything, "pane1", 1, "", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int"), "").
+					Return(nil).Once()
+			},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "custom_name_passed_through",
+			body: map[string]any{"pane_id": "pane1", "name": "my-pane"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.On("UpsertPane", mock.Anything, "pane1", 0, "", mock.AnythingOfType("int64"), mock.AnythingOfType("int"), mock.AnythingOfType("int"), "my-pane").
 					Return(nil).Once()
 			},
 			wantStatus: http.StatusNoContent,
@@ -409,7 +427,7 @@ func TestHandleRegister(t *testing.T) {
 			name: "zero_dimensions_default_to_220x50",
 			body: map[string]any{"pane_id": "pane1", "oplog_id": 1, "width": 0, "height": 0},
 			setupStore: func(m *dbmocks.MockStore) {
-				m.On("UpsertPane", mock.Anything, "pane1", 1, "", mock.AnythingOfType("int64"), 220, 50).
+				m.On("UpsertPane", mock.Anything, "pane1", 1, "", mock.AnythingOfType("int64"), 220, 50, "").
 					Return(nil).Once()
 			},
 			wantStatus: http.StatusNoContent,
@@ -1387,7 +1405,7 @@ func TestHandleSync_no_oplog_id_returns_400(t *testing.T) {
 func TestHandleRegister_oplog_id_and_name_pass_through(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 	store.On("UpsertPane", mock.Anything, "pane1", 42, "BASILISK Oplog", mock.AnythingOfType("int64"),
-		mock.AnythingOfType("int"), mock.AnythingOfType("int")).Return(nil).Once()
+		mock.AnythingOfType("int"), mock.AnythingOfType("int"), "").Return(nil).Once()
 
 	srv := newServer(t, store, 0)
 

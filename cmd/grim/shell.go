@@ -40,10 +40,25 @@ var shellCmd = &cobra.Command{
 
 func init() {
 	shellCmd.Flags().String("oplog", "", "Ghostwriter oplog ID or name; interactive selector shown when omitted")
+	shellCmd.Flags().String("name", "", fmt.Sprintf("Custom display name for this pane, max %d characters; auto-generated when omitted", db.MaxPaneNameLength))
+}
+
+// validatePaneName rejects a --name value that is too long, so `grim shell`
+// fails fast — before touching the daemon or spawning a shell — instead of
+// letting the daemon reject it after the shell has already started.
+func validatePaneName(name string) error {
+	if len(strings.TrimSpace(name)) > db.MaxPaneNameLength {
+		return fmt.Errorf("--name: %q is longer than %d characters", name, db.MaxPaneNameLength)
+	}
+	return nil
 }
 
 func runShell(cmd *cobra.Command, _ []string) error {
 	oplogArg, _ := cmd.Flags().GetString("oplog")
+	nameArg, _ := cmd.Flags().GetString("name")
+	if err := validatePaneName(nameArg); err != nil {
+		return err
+	}
 
 	isTTY := term.IsTerminal(int(os.Stdin.Fd()))
 	oplogID, oplogName, err := resolveOplog(oplogArg, isTTY, resolveOplogDeps{
@@ -103,7 +118,7 @@ func runShell(cmd *cobra.Command, _ []string) error {
 		// (e.g. testing or piped input).
 		width, height = 220, 50
 	}
-	if err := registerPane(daemonAddr, paneID, oplogID, oplogName, token, width, height); err != nil {
+	if err := registerPane(daemonAddr, paneID, oplogID, oplogName, token, width, height, nameArg); err != nil {
 		return fmt.Errorf("register pane: %w", err)
 	}
 
@@ -327,13 +342,14 @@ func watchDaemon(ctx context.Context, addr, token string) {
 }
 
 // registerPane calls POST /api/register on the daemon.
-func registerPane(addr, paneID string, oplogID int, oplogName, token string, width, height int) error {
+func registerPane(addr, paneID string, oplogID int, oplogName, token string, width, height int, name string) error {
 	body, _ := json.Marshal(map[string]any{
 		"pane_id":    paneID,
 		"oplog_id":   oplogID,
 		"oplog_name": oplogName,
 		"width":      width,
 		"height":     height,
+		"name":       name,
 	})
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, addr+"/api/register", bytes.NewReader(body))
 	if err != nil {

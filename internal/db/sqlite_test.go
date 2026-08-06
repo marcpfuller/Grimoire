@@ -40,10 +40,49 @@ func TestUpsertPane(t *testing.T) {
 	ctx := context.Background()
 
 	// First call creates the row.
-	require.NoError(t, s.UpsertPane(ctx, "pane-001", 0, "", 1000, 220, 50))
+	require.NoError(t, s.UpsertPane(ctx, "pane-001", 0, "", 1000, 220, 50, ""))
 
 	// Second call (daemon restart scenario) must not error.
-	require.NoError(t, s.UpsertPane(ctx, "pane-001", 0, "", 2000, 220, 50), "upsert on existing pane must succeed")
+	require.NoError(t, s.UpsertPane(ctx, "pane-001", 0, "", 2000, 220, 50, ""), "upsert on existing pane must succeed")
+}
+
+func TestUpsertPane_CustomName(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	t.Run("uses_supplied_name_verbatim", func(t *testing.T) {
+		require.NoError(t, s.UpsertPane(ctx, "pane-named-1", 0, "", 1000, 220, 50, "my-pane"))
+
+		p, err := s.GetPane(ctx, "pane-named-1")
+		require.NoError(t, err)
+		assert.Equal(t, "my-pane", p.Name)
+	})
+
+	t.Run("blank_name_falls_back_to_auto_generated", func(t *testing.T) {
+		require.NoError(t, s.UpsertPane(ctx, "pane-named-2", 0, "", 1000, 220, 50, "   "))
+
+		p, err := s.GetPane(ctx, "pane-named-2")
+		require.NoError(t, err)
+		assert.Regexp(t, `^[a-z]+-[a-z]+-`, p.Name, "blank/whitespace name must fall back to auto-generated name")
+	})
+
+	t.Run("name_at_max_length_is_accepted", func(t *testing.T) {
+		name := strings.Repeat("a", db.MaxPaneNameLength)
+		require.NoError(t, s.UpsertPane(ctx, "pane-named-3", 0, "", 1000, 220, 50, name))
+
+		p, err := s.GetPane(ctx, "pane-named-3")
+		require.NoError(t, err)
+		assert.Equal(t, name, p.Name)
+	})
+
+	t.Run("name_over_max_length_returns_ErrNameTooLong", func(t *testing.T) {
+		name := strings.Repeat("a", db.MaxPaneNameLength+1)
+		err := s.UpsertPane(ctx, "pane-named-4", 0, "", 1000, 220, 50, name)
+		require.ErrorIs(t, err, db.ErrNameTooLong)
+
+		_, getErr := s.GetPane(ctx, "pane-named-4")
+		assert.ErrorIs(t, getErr, db.ErrNotFound, "pane must not be created when the name is rejected")
+	})
 }
 
 func TestListPanes(t *testing.T) {
@@ -88,12 +127,12 @@ func TestPaneName(t *testing.T) {
 
 	t.Run("stable_across_upsert_reregistration", func(t *testing.T) {
 		paneID := "b2c3d4e5f6071829"
-		require.NoError(t, s.UpsertPane(ctx, paneID, 0, "", 1000, 220, 50))
+		require.NoError(t, s.UpsertPane(ctx, paneID, 0, "", 1000, 220, 50, ""))
 		first, err := s.GetPane(ctx, paneID)
 		require.NoError(t, err)
 
 		// Simulated daemon restart: shell re-registers with the same pane ID.
-		require.NoError(t, s.UpsertPane(ctx, paneID, 0, "", 2000, 220, 50))
+		require.NoError(t, s.UpsertPane(ctx, paneID, 0, "", 2000, 220, 50, ""))
 		second, err := s.GetPane(ctx, paneID)
 		require.NoError(t, err)
 
