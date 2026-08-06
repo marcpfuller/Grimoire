@@ -7,6 +7,7 @@ export type ServerEventType =
     | 'command_synced'
     | 'session_registered'
     | 'session_deregistered'
+    | 'tags_updated'
 
 export interface ServerEvent {
     type: ServerEventType
@@ -19,6 +20,7 @@ const EVENT_TYPES: ServerEventType[] = [
     'command_synced',
     'session_registered',
     'session_deregistered',
+    'tags_updated',
 ]
 
 /**
