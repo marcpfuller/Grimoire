@@ -1,0 +1,4 @@
+interface:
+  display_name: "Go Security Standards"
+  short_description: "Secure sensitive Go trust boundaries"
+  default_prompt: "Use $go-security-standards to threat-model and secure this Go boundary."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Go Struct First"
+  short_description: "Prefer typed Go state over loose maps"
+  default_prompt: "Use $go-struct-first to find the authoritative typed source before reading loose metadata."

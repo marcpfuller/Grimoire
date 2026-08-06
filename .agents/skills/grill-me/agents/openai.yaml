@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grill Me"
+  short_description: "Resolve one material plan decision at a time"
+  default_prompt: "Use $grill-me to settle the unresolved decisions in this plan one question at a time."

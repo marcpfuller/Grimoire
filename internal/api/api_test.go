@@ -557,6 +557,97 @@ func TestHandleTag_BroadcastsTagsUpdated(t *testing.T) {
 	}
 }
 
+// --- GET /api/commands/{id}/metadata ---
+
+func TestHandleGetMetadata(t *testing.T) {
+	tests := []struct {
+		name        string
+		setupStore  func(*dbmocks.MockStore)
+		wantStatus  int
+		wantDescrip string
+	}{
+		{
+			name: "existing_metadata_description_is_unmodified",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls", ExitCode: intPtr(0)}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(&db.CommandMetadata{CommandID: 42, Description: "operator note"}, nil)
+				m.EXPECT().GetTagsByCommand(mock.Anything, int64(42)).Return(nil, nil)
+			},
+			wantStatus:  http.StatusOK,
+			wantDescrip: "operator note",
+		},
+		{
+			name: "no_metadata_row_clean_exit_defaults_to_command_executed",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls", ExitCode: intPtr(0)}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(nil, db.ErrNotFound)
+				m.EXPECT().GetTagsByCommand(mock.Anything, int64(42)).Return(nil, nil)
+			},
+			wantStatus:  http.StatusOK,
+			wantDescrip: "Command Executed",
+		},
+		{
+			name: "no_metadata_row_nonzero_exit_defaults_to_command_failed",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls", ExitCode: intPtr(1)}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(nil, db.ErrNotFound)
+				m.EXPECT().GetTagsByCommand(mock.Anything, int64(42)).Return(nil, nil)
+			},
+			wantStatus:  http.StatusOK,
+			wantDescrip: "Command Failed",
+		},
+		{
+			name: "no_metadata_row_negative_exit_defaults_to_command_failed",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls", ExitCode: intPtr(-1)}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(nil, db.ErrNotFound)
+				m.EXPECT().GetTagsByCommand(mock.Anything, int64(42)).Return(nil, nil)
+			},
+			wantStatus:  http.StatusOK,
+			wantDescrip: "Command Failed",
+		},
+		{
+			name: "no_metadata_row_still_running_defaults_to_blank",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls", ExitCode: nil}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(nil, db.ErrNotFound)
+				m.EXPECT().GetTagsByCommand(mock.Anything, int64(42)).Return(nil, nil)
+			},
+			wantStatus:  http.StatusOK,
+			wantDescrip: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			tt.setupStore(store)
+			srv := newServer(t, store, 5)
+
+			w := doRequest(t, srv, http.MethodGet, "/api/commands/a1b2c3d/metadata", nil)
+
+			require.Equal(t, tt.wantStatus, w.Code)
+			if tt.wantStatus == http.StatusOK {
+				var resp api.MetadataResponse
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+				assert.Equal(t, tt.wantDescrip, resp.Description)
+			}
+		})
+	}
+}
+
+func intPtr(i int) *int { return &i }
+
 // --- PATCH /api/commands/{id}/metadata ---
 
 func TestHandlePatchMetadata(t *testing.T) {
@@ -614,6 +705,48 @@ func TestHandlePatchMetadata(t *testing.T) {
 					Return(nil, errors.New("db error"))
 			},
 			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "metadata_not_found_persists_default_description_for_clean_exit",
+			body: map[string]any{"operator": "alice"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls", ExitCode: intPtr(0)}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(nil, db.ErrNotFound)
+				m.EXPECT().UpsertCommandMetadata(mock.Anything, mock.MatchedBy(func(meta *db.CommandMetadata) bool {
+					return meta.Description == "Command Executed"
+				})).Return(nil)
+			},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "metadata_not_found_persists_default_description_for_failed_exit",
+			body: map[string]any{"operator": "alice"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls", ExitCode: intPtr(1)}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(nil, db.ErrNotFound)
+				m.EXPECT().UpsertCommandMetadata(mock.Anything, mock.MatchedBy(func(meta *db.CommandMetadata) bool {
+					return meta.Description == "Command Failed"
+				})).Return(nil)
+			},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "metadata_not_found_explicit_description_overrides_default",
+			body: map[string]any{"description": "custom note"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls", ExitCode: intPtr(0)}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(nil, db.ErrNotFound)
+				m.EXPECT().UpsertCommandMetadata(mock.Anything, mock.MatchedBy(func(meta *db.CommandMetadata) bool {
+					return meta.Description == "custom note"
+				})).Return(nil)
+			},
+			wantStatus: http.StatusNoContent,
 		},
 		{
 			name: "upsert_error",
@@ -732,6 +865,69 @@ func TestHandleHealth(t *testing.T) {
 	store := dbmocks.NewMockStore(t)
 	w := doRequest(t, newServer(t, store, 5), http.MethodGet, "/api/health", "")
 	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestHandleDelete(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		storeCall  string
+		id         string
+		storeErr   error
+		wantStatus int
+	}{
+		{name: "command_success", target: "/api/commands/a1b2c3d", storeCall: "DeleteCommandByShortID", id: "a1b2c3d", wantStatus: http.StatusNoContent},
+		{name: "command_not_found", target: "/api/commands/missing", storeCall: "DeleteCommandByShortID", id: "missing", storeErr: db.ErrNotFound, wantStatus: http.StatusNotFound},
+		{name: "command_store_error", target: "/api/commands/a1b2c3d", storeCall: "DeleteCommandByShortID", id: "a1b2c3d", storeErr: errors.New("db down"), wantStatus: http.StatusInternalServerError},
+		{name: "pane_success", target: "/api/panes/pane-1", storeCall: "DeletePane", id: "pane-1", wantStatus: http.StatusNoContent},
+		{name: "pane_not_found", target: "/api/panes/missing", storeCall: "DeletePane", id: "missing", storeErr: db.ErrNotFound, wantStatus: http.StatusNotFound},
+		{name: "pane_store_error", target: "/api/panes/pane-1", storeCall: "DeletePane", id: "pane-1", storeErr: errors.New("db down"), wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			store.On(tt.storeCall, mock.Anything, tt.id).Return(tt.storeErr).Once()
+
+			w := doRequest(t, newServer(t, store, 5), http.MethodDelete, tt.target, nil)
+
+			assert.Equal(t, tt.wantStatus, w.Code)
+		})
+	}
+}
+
+func TestHandleDelete_BroadcastsRefreshEvents(t *testing.T) {
+	tests := []struct {
+		name      string
+		target    string
+		storeCall string
+		id        string
+		wantType  string
+	}{
+		{name: "command", target: "/api/commands/a1b2c3d", storeCall: "DeleteCommandByShortID", id: "a1b2c3d", wantType: "command_deleted"},
+		{name: "pane", target: "/api/panes/pane-1", storeCall: "DeletePane", id: "pane-1", wantType: "session_deleted"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			store.On(tt.storeCall, mock.Anything, tt.id).Return(nil).Once()
+			broker := events.New()
+			sub := broker.Subscribe()
+			defer broker.Unsubscribe(sub)
+			srv := api.New(store, 5, broker, nil)
+
+			w := doRequest(t, srv, http.MethodDelete, tt.target, nil)
+			require.Equal(t, http.StatusNoContent, w.Code)
+
+			select {
+			case event := <-sub:
+				assert.Equal(t, tt.wantType, event.Type)
+			case <-time.After(time.Second):
+				t.Fatalf("expected %s event", tt.wantType)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------

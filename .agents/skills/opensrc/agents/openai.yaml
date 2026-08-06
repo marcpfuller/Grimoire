@@ -1,0 +1,4 @@
+interface:
+  display_name: "Open Source Context"
+  short_description: "Inspect version-matched dependency source"
+  default_prompt: "Use $opensrc to inspect the relevant version-matched dependency implementation."

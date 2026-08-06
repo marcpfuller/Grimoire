@@ -1,0 +1,4 @@
+interface:
+  display_name: "Graph Dependency Source"
+  short_description: "Fetch and graph dependency internals"
+  default_prompt: "Use $graph-dep to fetch and graph the relevant version-matched dependency implementation."

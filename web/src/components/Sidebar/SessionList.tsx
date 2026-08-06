@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { Session, Toast } from '../../api/types'
 import { API } from '../../api'
 
@@ -23,6 +23,14 @@ export function SessionList({
 }: SessionListProps) {
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
   const [exporting, setExporting] = useState(false)
+
+  useEffect(() => {
+    const availableIds = new Set(sessions.flatMap(session => session.commands.map(command => command.id)))
+    setCheckedIds(prev => {
+      const next = new Set([...prev].filter(id => availableIds.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [sessions])
 
   const toggleCheck = (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
