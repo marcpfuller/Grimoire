@@ -13,9 +13,13 @@ export function useTagsData(): Tag[] {
   // Initial load.
   useEffect(() => { fetchTags() }, [fetchTags])
 
-  // Refetch whenever a tag is added or removed anywhere (UI or CLI).
+  // Refetch whenever tags change directly or their owning records are deleted.
   useServerEvents(useCallback((event) => {
-    if (event.type === 'tags_updated') {
+    if (
+      event.type === 'tags_updated' ||
+      event.type === 'command_deleted' ||
+      event.type === 'session_deleted'
+    ) {
       fetchTags()
     }
   }, [fetchTags]))

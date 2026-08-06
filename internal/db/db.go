@@ -109,6 +109,10 @@ type Store interface {
 	// the ID is immediately available to other panes. The pane row and all
 	// its commands are retained for historical purposes.
 	DeregisterPane(ctx context.Context, paneID string) error
+	// DeletePane atomically deletes a pane, its pending reservation, and all
+	// commands and command-owned records. Returns ErrNotFound when paneID does
+	// not identify a pane.
+	DeletePane(ctx context.Context, paneID string) error
 
 	// Commands
 	// ReserveShortID atomically claims shortID for paneID in the
@@ -128,6 +132,10 @@ type Store interface {
 	ListCommandsByPane(ctx context.Context, paneID string) ([]*Command, error)
 	GetCommandsByPaneSeqRange(ctx context.Context, paneID string, firstSeq, lastSeq int64) ([]*Command, error)
 	ListUnsynced(ctx context.Context) ([]*Command, error)
+	// DeleteCommandByShortID atomically deletes a command and all of its
+	// output chunks, tags, and metadata. Returns ErrNotFound when shortID does
+	// not identify a command.
+	DeleteCommandByShortID(ctx context.Context, shortID string) error
 	FinalizeCommand(ctx context.Context, shortID string, endedAt int64, exitCode int) error
 	MarkCommandSynced(ctx context.Context, commandID int64) error
 	// ShortIDExists is a diagnostic utility that reports whether shortID is

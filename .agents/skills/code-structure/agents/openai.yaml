@@ -1,0 +1,4 @@
+interface:
+  display_name: "Go Code Structure"
+  short_description: "Structure shared Go operational logic"
+  default_prompt: "Use $code-structure to design a focused Go package boundary for this duplicated workflow."

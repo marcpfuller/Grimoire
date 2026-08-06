@@ -1,0 +1,4 @@
+interface:
+  display_name: "Graphify"
+  short_description: "Build or query a knowledge graph"
+  default_prompt: "Use $graphify to build, update, or query the requested knowledge graph."

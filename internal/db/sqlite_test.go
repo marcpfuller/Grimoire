@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -352,6 +353,165 @@ func TestListCommandsByPane(t *testing.T) {
 		got, err := s.ListCommandsByPane(ctx, "pane-empty")
 		require.NoError(t, err)
 		assert.Empty(t, got)
+	})
+}
+
+func TestDeleteCommandByShortID(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreatePane(ctx, "pane-A", 0, "", 1000, 220, 50))
+	for _, fixture := range []struct {
+		shortID string
+		command string
+	}{
+		{shortID: "del0001", command: "whoami"},
+		{shortID: "keep001", command: "hostname"},
+	} {
+		require.NoError(t, s.ReserveShortID(ctx, "pane-A", fixture.shortID))
+		cmd := &db.Command{PaneID: "pane-A", Command: fixture.command, StartedAt: 1000}
+		require.NoError(t, s.CreateCommand(ctx, cmd))
+		require.NoError(t, s.AppendOutputChunk(ctx, &db.OutputChunk{CommandID: cmd.ID, Data: []byte(fixture.command)}))
+		require.NoError(t, s.AddTag(ctx, cmd.ID, fixture.command, 1000))
+		require.NoError(t, s.UpsertCommandMetadata(ctx, &db.CommandMetadata{CommandID: cmd.ID, Operator: "operator"}))
+	}
+
+	deleted, err := s.GetCommandByShortID(ctx, "del0001")
+	require.NoError(t, err)
+	kept, err := s.GetCommandByShortID(ctx, "keep001")
+	require.NoError(t, err)
+
+	require.NoError(t, s.DeleteCommandByShortID(ctx, "del0001"))
+
+	_, err = s.GetCommandByShortID(ctx, "del0001")
+	require.ErrorIs(t, err, db.ErrNotFound)
+	chunks, err := s.GetOutputChunks(ctx, deleted.ID)
+	require.NoError(t, err)
+	assert.Empty(t, chunks)
+	_, err = s.GetCommandMetadata(ctx, deleted.ID)
+	require.ErrorIs(t, err, db.ErrNotFound)
+
+	tags, err := s.ListAllTags(ctx)
+	require.NoError(t, err)
+	require.Len(t, tags, 1)
+	assert.Equal(t, kept.ID, tags[0].CommandID)
+
+	keptChunks, err := s.GetOutputChunks(ctx, kept.ID)
+	require.NoError(t, err)
+	assert.Len(t, keptChunks, 1)
+	_, err = s.GetCommandMetadata(ctx, kept.ID)
+	require.NoError(t, err)
+	_, err = s.GetPane(ctx, "pane-A")
+	require.NoError(t, err)
+
+	require.ErrorIs(t, s.DeleteCommandByShortID(ctx, `' OR 1=1 --`), db.ErrNotFound)
+	_, err = s.GetCommandByShortID(ctx, "keep001")
+	require.NoError(t, err, "SQL metacharacters must be treated as a literal short ID")
+}
+
+func TestDeletePane(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	for _, paneID := range []string{"pane-delete", "pane-keep"} {
+		require.NoError(t, s.CreatePane(ctx, paneID, 0, "", 1000, 220, 50))
+	}
+
+	type commandFixture struct {
+		paneID  string
+		shortID string
+	}
+	commands := make(map[string]*db.Command)
+	for _, fixture := range []commandFixture{
+		{paneID: "pane-delete", shortID: "del0002"},
+		{paneID: "pane-delete", shortID: "del0003"},
+		{paneID: "pane-keep", shortID: "keep002"},
+	} {
+		require.NoError(t, s.ReserveShortID(ctx, fixture.paneID, fixture.shortID))
+		cmd := &db.Command{PaneID: fixture.paneID, Command: fixture.shortID, StartedAt: 1000}
+		require.NoError(t, s.CreateCommand(ctx, cmd))
+		require.NoError(t, s.AppendOutputChunk(ctx, &db.OutputChunk{CommandID: cmd.ID, Data: []byte(fixture.shortID)}))
+		require.NoError(t, s.AddTag(ctx, cmd.ID, fixture.shortID, 1000))
+		require.NoError(t, s.UpsertCommandMetadata(ctx, &db.CommandMetadata{CommandID: cmd.ID, Operator: "operator"}))
+		commands[fixture.shortID] = cmd
+	}
+	require.NoError(t, s.ReserveShortID(ctx, "pane-delete", "pending"))
+
+	require.NoError(t, s.DeletePane(ctx, "pane-delete"))
+
+	_, err := s.GetPane(ctx, "pane-delete")
+	require.ErrorIs(t, err, db.ErrNotFound)
+	for _, shortID := range []string{"del0002", "del0003"} {
+		cmd := commands[shortID]
+		_, err = s.GetCommandByShortID(ctx, shortID)
+		require.ErrorIs(t, err, db.ErrNotFound)
+		chunks, chunksErr := s.GetOutputChunks(ctx, cmd.ID)
+		require.NoError(t, chunksErr)
+		assert.Empty(t, chunks)
+		_, metadataErr := s.GetCommandMetadata(ctx, cmd.ID)
+		require.ErrorIs(t, metadataErr, db.ErrNotFound)
+	}
+	pending, err := s.ShortIDExists(ctx, "pending")
+	require.NoError(t, err)
+	assert.False(t, pending)
+
+	_, err = s.GetPane(ctx, "pane-keep")
+	require.NoError(t, err)
+	_, err = s.GetCommandByShortID(ctx, "keep002")
+	require.NoError(t, err)
+	keptChunks, err := s.GetOutputChunks(ctx, commands["keep002"].ID)
+	require.NoError(t, err)
+	assert.Len(t, keptChunks, 1)
+	_, err = s.GetCommandMetadata(ctx, commands["keep002"].ID)
+	require.NoError(t, err)
+	tags, err := s.ListAllTags(ctx)
+	require.NoError(t, err)
+	require.Len(t, tags, 1)
+	assert.Equal(t, commands["keep002"].ID, tags[0].CommandID)
+
+	require.NoError(t, s.CreatePane(ctx, "pane-empty", 0, "", 1000, 220, 50))
+	require.NoError(t, s.DeletePane(ctx, "pane-empty"))
+	_, err = s.GetPane(ctx, "pane-empty")
+	require.ErrorIs(t, err, db.ErrNotFound)
+
+	require.ErrorIs(t, s.DeletePane(ctx, `' OR 1=1 --`), db.ErrNotFound)
+	_, err = s.GetPane(ctx, "pane-keep")
+	require.NoError(t, err, "SQL metacharacters must be treated as a literal pane ID")
+}
+
+func TestDeletedCommandIDsAreNotReused(t *testing.T) {
+	createCommand := func(t *testing.T, s db.Store, paneID, shortID string) *db.Command {
+		t.Helper()
+		ctx := context.Background()
+		require.NoError(t, s.ReserveShortID(ctx, paneID, shortID))
+		cmd := &db.Command{PaneID: paneID, Command: shortID, StartedAt: 1000}
+		require.NoError(t, s.CreateCommand(ctx, cmd))
+		return cmd
+	}
+
+	t.Run("after command deletion", func(t *testing.T) {
+		s := openTestStore(t)
+		ctx := context.Background()
+		require.NoError(t, s.CreatePane(ctx, "pane-command-delete", 0, "", 1000, 220, 50))
+
+		deleted := createCommand(t, s, "pane-command-delete", "old0001")
+		require.NoError(t, s.DeleteCommandByShortID(ctx, deleted.ShortID))
+		created := createCommand(t, s, "pane-command-delete", "new0001")
+
+		assert.Greater(t, created.ID, deleted.ID, "a stale PTY or sync reference must never resolve to a new command")
+	})
+
+	t.Run("after pane deletion", func(t *testing.T) {
+		s := openTestStore(t)
+		ctx := context.Background()
+		require.NoError(t, s.CreatePane(ctx, "pane-delete-old", 0, "", 1000, 220, 50))
+
+		deleted := createCommand(t, s, "pane-delete-old", "old0002")
+		require.NoError(t, s.DeletePane(ctx, "pane-delete-old"))
+		require.NoError(t, s.CreatePane(ctx, "pane-delete-new", 0, "", 2000, 220, 50))
+		created := createCommand(t, s, "pane-delete-new", "new0002")
+
+		assert.Greater(t, created.ID, deleted.ID, "pane deletion must not make command IDs reusable")
 	})
 }
 
@@ -835,4 +995,85 @@ func TestMigrationV10PaneNameBackfill(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, p.Name, "legacy pane must have a backfilled name")
 	assert.True(t, strings.HasSuffix(p.Name, "abcd"), "backfilled name %q must end with last 4 chars of id", p.Name)
+}
+
+func TestMigrationV11CommandIDsAutoincrement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "migration_v11.db")
+
+	rawDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = rawDB.Exec(`
+		PRAGMA foreign_keys=ON;
+		CREATE TABLE panes (
+			id TEXT PRIMARY KEY, oplog_id INTEGER NOT NULL DEFAULT 0,
+			oplog_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+			width INTEGER NOT NULL DEFAULT 220, height INTEGER NOT NULL DEFAULT 50,
+			name TEXT NOT NULL DEFAULT ''
+		);
+		CREATE TABLE commands (
+			id INTEGER PRIMARY KEY, short_id TEXT NOT NULL UNIQUE,
+			pane_id TEXT NOT NULL REFERENCES panes(id), seq INTEGER NOT NULL,
+			command TEXT NOT NULL, prompt TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL,
+			ended_at INTEGER, exit_code INTEGER, synced_gw INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(pane_id, seq)
+		);
+		CREATE TABLE output_chunks (
+			id INTEGER PRIMARY KEY, command_id INTEGER NOT NULL REFERENCES commands(id),
+			offset_ms INTEGER NOT NULL, data BLOB NOT NULL
+		);
+		CREATE TABLE tags (
+			id INTEGER PRIMARY KEY, command_id INTEGER NOT NULL REFERENCES commands(id),
+			label TEXT NOT NULL, created_at INTEGER NOT NULL, UNIQUE(command_id, label)
+		);
+		CREATE TABLE pending_commands (
+			pane_id TEXT PRIMARY KEY REFERENCES panes(id), short_id TEXT NOT NULL UNIQUE
+		);
+		CREATE TABLE command_metadata (
+			command_id INTEGER PRIMARY KEY REFERENCES commands(id),
+			operator TEXT NOT NULL DEFAULT '', tool TEXT NOT NULL DEFAULT '',
+			user_context TEXT NOT NULL DEFAULT '', source_ip TEXT NOT NULL DEFAULT '',
+			destination_ip TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+			comments TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE INDEX idx_commands_pane_seq ON commands(pane_id, seq);
+		CREATE INDEX idx_chunks_command_offset ON output_chunks(command_id, offset_ms);
+		INSERT INTO panes (id, created_at, width, height, name)
+		VALUES ('legacy-pane', 1000, 220, 50, 'legacy-pane');
+		INSERT INTO commands (id, short_id, pane_id, seq, command, started_at, ended_at)
+		VALUES (41, 'legacy1', 'legacy-pane', 1, 'whoami', 1000, 2000);
+		INSERT INTO output_chunks (command_id, offset_ms, data) VALUES (41, 10, 'output');
+		INSERT INTO tags (command_id, label, created_at) VALUES (41, 'recon', 1000);
+		INSERT INTO command_metadata (command_id, operator) VALUES (41, 'operator');
+		PRAGMA user_version=10;
+	`)
+	require.NoError(t, err, "create version-10 database")
+	require.NoError(t, rawDB.Close())
+
+	s, err := db.Open(path)
+	require.NoError(t, err)
+	defer s.Close() //nolint:errcheck
+
+	ver, err := db.UserVersionForTest(s)
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, ver, 11)
+
+	legacy, err := s.GetCommandByShortID(context.Background(), "legacy1")
+	require.NoError(t, err)
+	require.Equal(t, int64(41), legacy.ID)
+	chunks, err := s.GetOutputChunks(context.Background(), legacy.ID)
+	require.NoError(t, err)
+	require.Len(t, chunks, 1, "migration must preserve command output")
+	tags, err := s.GetTagsByCommand(context.Background(), legacy.ID)
+	require.NoError(t, err)
+	require.Len(t, tags, 1, "migration must preserve command tags")
+	metadata, err := s.GetCommandMetadata(context.Background(), legacy.ID)
+	require.NoError(t, err)
+	require.Equal(t, "operator", metadata.Operator)
+
+	require.NoError(t, s.DeleteCommandByShortID(context.Background(), legacy.ShortID))
+	require.NoError(t, s.ReserveShortID(context.Background(), "legacy-pane", "after11"))
+	created := &db.Command{PaneID: "legacy-pane", Command: "hostname", StartedAt: 3000}
+	require.NoError(t, s.CreateCommand(context.Background(), created))
+	assert.Greater(t, created.ID, legacy.ID)
 }

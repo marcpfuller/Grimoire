@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS panes (
 );
 
 CREATE TABLE IF NOT EXISTS commands (
-    id         INTEGER PRIMARY KEY,
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
     short_id   TEXT    NOT NULL UNIQUE,
     pane_id    TEXT    NOT NULL REFERENCES panes(id),
     seq        INTEGER NOT NULL,
@@ -149,6 +149,8 @@ type migration struct {
 //	9: drop project_id column from panes.
 //	10: add name column to panes for a readable haikunator-based display name,
 //	    backfilling any pre-existing rows left with the empty default.
+//	11: make command row IDs permanently monotonic so stale PTY and sync
+//	    references can never resolve to a different command after deletion.
 var migrations = []migration{
 	{
 		version: 1,
@@ -200,6 +202,113 @@ var migrations = []migration{
 		version: 10,
 		fn:      addPaneNameColumn,
 	},
+	{
+		version: 11,
+		fn:      ensureCommandIDsAutoincrement,
+	},
+}
+
+// ensureCommandIDsAutoincrement rebuilds legacy commands tables with SQLite's
+// AUTOINCREMENT allocator. Plain INTEGER PRIMARY KEY tables may reuse the
+// highest deleted row ID, but command IDs escape the database into the PTY
+// recorder and sync loop, where stale references must never identify a newer
+// command.
+//
+// The migration follows SQLite's table-rebuild procedure with foreign key
+// enforcement temporarily disabled. Existing IDs and child references are
+// preserved, sqlite_sequence is seeded by the explicit ID copy, and an
+// integrity check runs before the migration is considered successful.
+func ensureCommandIDsAutoincrement(db *sql.DB) (retErr error) {
+	var createSQL string
+	if err := db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'commands'`,
+	).Scan(&createSQL); err != nil {
+		return fmt.Errorf("inspect commands schema: %w", err)
+	}
+	if strings.Contains(strings.ToUpper(createSQL), "AUTOINCREMENT") {
+		return nil
+	}
+
+	var foreignKeys int
+	if err := db.QueryRow(`PRAGMA foreign_keys`).Scan(&foreignKeys); err != nil {
+		return fmt.Errorf("read foreign_keys pragma: %w", err)
+	}
+	if _, err := db.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys: %w", err)
+	}
+	restoreForeignKeys := true
+	defer func() {
+		if !restoreForeignKeys {
+			return
+		}
+		if _, err := db.Exec(fmt.Sprintf(`PRAGMA foreign_keys=%d`, foreignKeys)); err != nil && retErr == nil { //nolint:gosec // foreignKeys is read from SQLite as 0 or 1
+			retErr = fmt.Errorf("restore foreign keys: %w", err)
+		}
+	}()
+
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin commands rebuild: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck // rollback is best-effort after the primary migration error
+
+	if _, err = tx.Exec(`
+		CREATE TABLE commands_autoincrement (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			short_id   TEXT    NOT NULL UNIQUE,
+			pane_id    TEXT    NOT NULL REFERENCES panes(id),
+			seq        INTEGER NOT NULL,
+			command    TEXT    NOT NULL,
+			prompt     TEXT    NOT NULL DEFAULT '',
+			started_at INTEGER NOT NULL,
+			ended_at   INTEGER,
+			exit_code  INTEGER,
+			synced_gw  INTEGER NOT NULL DEFAULT 0,
+			UNIQUE(pane_id, seq)
+		);
+		INSERT INTO commands_autoincrement
+			(id, short_id, pane_id, seq, command, prompt, started_at, ended_at, exit_code, synced_gw)
+		SELECT id, short_id, pane_id, seq, command, prompt, started_at, ended_at, exit_code, synced_gw
+		FROM commands;
+		DROP TABLE commands;
+		ALTER TABLE commands_autoincrement RENAME TO commands;
+		CREATE INDEX idx_commands_pane_seq ON commands(pane_id, seq);
+	`); err != nil {
+		return fmt.Errorf("rebuild commands table: %w", err)
+	}
+	rows, err := tx.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("check foreign keys: %w", err)
+	}
+	if rows.Next() {
+		var table, parent string
+		var rowID any
+		var foreignKeyID int
+		if err = rows.Scan(&table, &rowID, &parent, &foreignKeyID); err != nil {
+			_ = rows.Close() //nolint:sqlclosecheck // the scan error is the actionable failure
+			return fmt.Errorf("scan foreign key violation: %w", err)
+		}
+		if err = rows.Close(); err != nil {
+			return fmt.Errorf("close foreign key check: %w", err)
+		}
+		return fmt.Errorf("foreign key violation after commands rebuild: table=%s rowid=%v parent=%s constraint=%d", table, rowID, parent, foreignKeyID)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close() //nolint:sqlclosecheck // the iteration error is the actionable failure
+		return fmt.Errorf("iterate foreign key check: %w", err)
+	}
+	if err = rows.Close(); err != nil {
+		return fmt.Errorf("close foreign key check: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit commands rebuild: %w", err)
+	}
+	if _, err = db.Exec(fmt.Sprintf(`PRAGMA foreign_keys=%d`, foreignKeys)); err != nil { //nolint:gosec // foreignKeys is read from SQLite as 0 or 1
+		return fmt.Errorf("restore foreign keys: %w", err)
+	}
+	restoreForeignKeys = false
+	return nil
 }
 
 // dropColumnIfPresent returns a migration function that removes column from
@@ -681,6 +790,84 @@ func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err er
 	}()
 	cmds, err = scanCommands(rows)
 	return
+}
+
+func (s *sqliteStore) DeleteCommandByShortID(ctx context.Context, shortID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("db: begin delete command tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var commandID int64
+	if err = tx.QueryRowContext(ctx,
+		`SELECT id FROM commands WHERE short_id = ?`, shortID,
+	).Scan(&commandID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("db: find command for deletion: %w", err)
+	}
+
+	deletes := []struct {
+		name  string
+		query string
+	}{
+		{name: "output", query: `DELETE FROM output_chunks WHERE command_id = ?`},
+		{name: "tags", query: `DELETE FROM tags WHERE command_id = ?`},
+		{name: "metadata", query: `DELETE FROM command_metadata WHERE command_id = ?`},
+		{name: "command", query: `DELETE FROM commands WHERE id = ?`},
+	}
+	for _, deletion := range deletes {
+		if _, err = tx.ExecContext(ctx, deletion.query, commandID); err != nil {
+			return fmt.Errorf("db: delete command %s: %w", deletion.name, err)
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("db: commit delete command: %w", err)
+	}
+	return nil
+}
+
+func (s *sqliteStore) DeletePane(ctx context.Context, paneID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("db: begin delete pane tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	var exists int
+	if err = tx.QueryRowContext(ctx,
+		`SELECT 1 FROM panes WHERE id = ?`, paneID,
+	).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return fmt.Errorf("db: find pane for deletion: %w", err)
+	}
+
+	deletes := []struct {
+		name  string
+		query string
+	}{
+		{name: "pending reservation", query: `DELETE FROM pending_commands WHERE pane_id = ?`},
+		{name: "command output", query: `DELETE FROM output_chunks WHERE command_id IN (SELECT id FROM commands WHERE pane_id = ?)`},
+		{name: "command tags", query: `DELETE FROM tags WHERE command_id IN (SELECT id FROM commands WHERE pane_id = ?)`},
+		{name: "command metadata", query: `DELETE FROM command_metadata WHERE command_id IN (SELECT id FROM commands WHERE pane_id = ?)`},
+		{name: "commands", query: `DELETE FROM commands WHERE pane_id = ?`},
+		{name: "pane", query: `DELETE FROM panes WHERE id = ?`},
+	}
+	for _, deletion := range deletes {
+		if _, err = tx.ExecContext(ctx, deletion.query, paneID); err != nil {
+			return fmt.Errorf("db: delete pane %s: %w", deletion.name, err)
+		}
+	}
+
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("db: commit delete pane: %w", err)
+	}
+	return nil
 }
 
 func (s *sqliteStore) FinalizeCommand(ctx context.Context, shortID string, endedAt int64, exitCode int) error {

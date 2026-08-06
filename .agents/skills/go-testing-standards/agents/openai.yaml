@@ -1,0 +1,4 @@
+interface:
+  display_name: "Go Testing Standards"
+  short_description: "Write focused, reliable Go tests"
+  default_prompt: "Use $go-testing-standards to test this Go behavior with focused TDD and risk-based verification."

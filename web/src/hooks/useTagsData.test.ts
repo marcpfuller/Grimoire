@@ -30,19 +30,21 @@ describe('useTagsData', () => {
         expect(fetchTags).toHaveBeenCalledTimes(1)
     })
 
-    it('refetches tags when a tags_updated server event is received', async () => {
+    it.each(['tags_updated', 'command_deleted', 'session_deleted'] as const)(
+      'refetches tags when a %s server event is received', async (eventType) => {
         fetchTags.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: 't1' }])
 
         const { result } = renderHook(() => useTagsData())
         await waitFor(() => expect(fetchTags).toHaveBeenCalledTimes(1))
 
         act(() => {
-            serverEventCallback?.({ type: 'tags_updated', data: {} } as ServerEvent)
+            serverEventCallback?.({ type: eventType, data: {} } as ServerEvent)
         })
 
         await waitFor(() => expect(fetchTags).toHaveBeenCalledTimes(2))
         await waitFor(() => expect(result.current).toHaveLength(1))
-    })
+      },
+    )
 
     it('ignores unrelated server events', async () => {
         fetchTags.mockResolvedValue([])

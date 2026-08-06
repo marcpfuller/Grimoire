@@ -10,8 +10,10 @@
 //	POST /api/precmd                    shell precmd records a command end
 //	POST /api/deregister                shell exit removes the pane's pending reservation
 //	POST /api/tag                       grim tag attaches a label to a recorded command
+//	DELETE /api/commands/{id}           delete a command and its associated records
 //	GET  /api/commands/{id}/metadata    fetch operator annotations for a command
 //	PATCH /api/commands/{id}/metadata   update operator annotations for a command
+//	DELETE /api/panes/{id}              delete a pane and all associated records
 //	GET  /api/oplogs                    list oplogs visible to configured Ghostwriter tokens
 package api
 
@@ -101,9 +103,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/precmd", s.handlePrecmd)
 	mux.HandleFunc("POST /api/deregister", s.handleDeregister)
 	mux.HandleFunc("POST /api/tag", s.handleTag)
+	mux.HandleFunc("DELETE /api/commands/{id}", s.handleDeleteCommand)
 	mux.HandleFunc("GET /api/commands/{id}/output", s.handleGetOutput)
 	mux.HandleFunc("GET /api/commands/{id}/metadata", s.handleGetMetadata)
 	mux.HandleFunc("PATCH /api/commands/{id}/metadata", s.handlePatchMetadata)
+	mux.HandleFunc("DELETE /api/panes/{id}", s.handleDeletePane)
 	mux.HandleFunc("GET /api/config", s.handleGetConfig)
 	mux.HandleFunc("POST /api/config", s.handleUpdateConfig)
 	mux.HandleFunc("GET /api/oplogs", s.handleGetOplogs)
@@ -384,6 +388,47 @@ func (s *Server) handleDeregister(w http.ResponseWriter, r *http.Request) {
 	s.broadcast(events.Event{
 		Type: "session_deregistered",
 		Data: map[string]any{"pane_id": req.PaneID},
+	})
+}
+
+// handleDeleteCommand deletes a command and its output, tags, and metadata.
+func (s *Server) handleDeleteCommand(w http.ResponseWriter, r *http.Request) {
+	shortID := r.PathValue("id")
+	if err := s.store.DeleteCommandByShortID(r.Context(), shortID); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "command not found")
+			return
+		}
+		s.logWarn("delete command failed", "short_id", shortID, "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete command")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	s.broadcast(events.Event{
+		Type: "command_deleted",
+		Data: map[string]any{"short_id": shortID},
+	})
+}
+
+// handleDeletePane deletes a pane, including every command-owned record and
+// any pending short-ID reservation associated with it.
+func (s *Server) handleDeletePane(w http.ResponseWriter, r *http.Request) {
+	paneID := r.PathValue("id")
+	if err := s.store.DeletePane(r.Context(), paneID); err != nil {
+		if errors.Is(err, db.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "pane not found")
+			return
+		}
+		s.logWarn("delete pane failed", "pane_id", paneID, "err", err)
+		writeError(w, http.StatusInternalServerError, "failed to delete pane")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+	s.broadcast(events.Event{
+		Type: "session_deleted",
+		Data: map[string]any{"pane_id": paneID},
 	})
 }
 
@@ -900,7 +945,8 @@ func (s *Server) handleShutdown(w http.ResponseWriter, _ *http.Request) {
 // "?token=" query parameter for this endpoint only.
 //
 // Event types: command_started, command_finished, command_synced,
-// session_registered, session_deregistered, tags_updated.
+// command_deleted, session_registered, session_deregistered, session_deleted,
+// tags_updated.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {

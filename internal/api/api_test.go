@@ -734,6 +734,69 @@ func TestHandleHealth(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 }
 
+func TestHandleDelete(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		storeCall  string
+		id         string
+		storeErr   error
+		wantStatus int
+	}{
+		{name: "command_success", target: "/api/commands/a1b2c3d", storeCall: "DeleteCommandByShortID", id: "a1b2c3d", wantStatus: http.StatusNoContent},
+		{name: "command_not_found", target: "/api/commands/missing", storeCall: "DeleteCommandByShortID", id: "missing", storeErr: db.ErrNotFound, wantStatus: http.StatusNotFound},
+		{name: "command_store_error", target: "/api/commands/a1b2c3d", storeCall: "DeleteCommandByShortID", id: "a1b2c3d", storeErr: errors.New("db down"), wantStatus: http.StatusInternalServerError},
+		{name: "pane_success", target: "/api/panes/pane-1", storeCall: "DeletePane", id: "pane-1", wantStatus: http.StatusNoContent},
+		{name: "pane_not_found", target: "/api/panes/missing", storeCall: "DeletePane", id: "missing", storeErr: db.ErrNotFound, wantStatus: http.StatusNotFound},
+		{name: "pane_store_error", target: "/api/panes/pane-1", storeCall: "DeletePane", id: "pane-1", storeErr: errors.New("db down"), wantStatus: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			store.On(tt.storeCall, mock.Anything, tt.id).Return(tt.storeErr).Once()
+
+			w := doRequest(t, newServer(t, store, 5), http.MethodDelete, tt.target, nil)
+
+			assert.Equal(t, tt.wantStatus, w.Code)
+		})
+	}
+}
+
+func TestHandleDelete_BroadcastsRefreshEvents(t *testing.T) {
+	tests := []struct {
+		name      string
+		target    string
+		storeCall string
+		id        string
+		wantType  string
+	}{
+		{name: "command", target: "/api/commands/a1b2c3d", storeCall: "DeleteCommandByShortID", id: "a1b2c3d", wantType: "command_deleted"},
+		{name: "pane", target: "/api/panes/pane-1", storeCall: "DeletePane", id: "pane-1", wantType: "session_deleted"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			store.On(tt.storeCall, mock.Anything, tt.id).Return(nil).Once()
+			broker := events.New()
+			sub := broker.Subscribe()
+			defer broker.Unsubscribe(sub)
+			srv := api.New(store, 5, broker, nil)
+
+			w := doRequest(t, srv, http.MethodDelete, tt.target, nil)
+			require.Equal(t, http.StatusNoContent, w.Code)
+
+			select {
+			case event := <-sub:
+				assert.Equal(t, tt.wantType, event.Type)
+			case <-time.After(time.Second):
+				t.Fatalf("expected %s event", tt.wantType)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/sessions
 // ---------------------------------------------------------------------------
