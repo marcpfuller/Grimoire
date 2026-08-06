@@ -18,6 +18,7 @@ import (
 	"github.com/marcpfuller/grimoire/internal/api"
 	"github.com/marcpfuller/grimoire/internal/db"
 	dbmocks "github.com/marcpfuller/grimoire/internal/db/mocks"
+	"github.com/marcpfuller/grimoire/internal/events"
 	"github.com/marcpfuller/grimoire/internal/ghostwriter"
 	grimsync "github.com/marcpfuller/grimoire/internal/sync"
 )
@@ -505,6 +506,206 @@ func TestHandleTag(t *testing.T) {
 			tt.setupStore(store)
 			w := doRequest(t, newServer(t, store, 5), http.MethodPost, "/api/tag", tt.body)
 			assert.Equal(t, tt.wantStatus, w.Code)
+		})
+	}
+}
+
+func TestHandleTag_BroadcastsTagsUpdated(t *testing.T) {
+	store := dbmocks.NewMockStore(t)
+	store.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+		Return(&db.Command{ID: 42}, nil)
+	store.EXPECT().AddTag(mock.Anything, int64(42), "Dumped hashes", mock.AnythingOfType("int64")).
+		Return(nil)
+
+	broker := events.New()
+	sub := broker.Subscribe()
+	defer broker.Unsubscribe(sub)
+	srv := api.New(store, 5, broker, nil)
+
+	w := doRequest(t, srv, http.MethodPost, "/api/tag",
+		map[string]string{"short_id": "a1b2c3d", "label": "Dumped hashes"})
+	require.Equal(t, http.StatusNoContent, w.Code)
+
+	select {
+	case e := <-sub:
+		assert.Equal(t, "tags_updated", e.Type)
+		data, ok := e.Data.(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "a1b2c3d", data["short_id"])
+		assert.Equal(t, int64(42), data["command_id"])
+		assert.Equal(t, "Dumped hashes", data["label"])
+	case <-time.After(time.Second):
+		t.Fatal("expected tags_updated event to be broadcast")
+	}
+}
+
+// --- PATCH /api/commands/{id}/metadata ---
+
+func TestHandlePatchMetadata(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       any
+		setupStore func(*dbmocks.MockStore)
+		wantStatus int
+	}{
+		{
+			name:       "non_object_body",
+			body:       "not-json",
+			setupStore: func(_ *dbmocks.MockStore) {},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "command_not_found",
+			body: map[string]any{"operator": "alice"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(nil, db.ErrNotFound)
+			},
+			wantStatus: http.StatusNotFound,
+		},
+		{
+			name: "lookup_error",
+			body: map[string]any{"operator": "alice"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(nil, errors.New("db error"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "metadata_not_found_creates_fresh_and_saves",
+			body: map[string]any{"operator": "alice"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls"}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(nil, db.ErrNotFound)
+				m.EXPECT().UpsertCommandMetadata(mock.Anything, mock.MatchedBy(func(meta *db.CommandMetadata) bool {
+					return meta.CommandID == 42 && meta.Operator == "alice"
+				})).Return(nil)
+			},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "metadata_load_error",
+			body: map[string]any{"operator": "alice"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls"}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(nil, errors.New("db error"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "upsert_error",
+			body: map[string]any{"operator": "alice"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls"}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(&db.CommandMetadata{CommandID: 42}, nil)
+				m.EXPECT().UpsertCommandMetadata(mock.Anything, mock.Anything).
+					Return(errors.New("db error"))
+			},
+			wantStatus: http.StatusInternalServerError,
+		},
+		{
+			name: "no_tag_changes",
+			body: map[string]any{"operator": "alice"},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls"}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(&db.CommandMetadata{CommandID: 42}, nil)
+				m.EXPECT().UpsertCommandMetadata(mock.Anything, mock.Anything).
+					Return(nil)
+			},
+			wantStatus: http.StatusNoContent,
+		},
+		{
+			name: "add_and_remove_tags",
+			body: map[string]any{"addTags": []string{"new-tag"}, "removeTags": []string{"old-tag"}},
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+					Return(&db.Command{ID: 42, Command: "ls"}, nil)
+				m.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+					Return(&db.CommandMetadata{CommandID: 42}, nil)
+				m.EXPECT().UpsertCommandMetadata(mock.Anything, mock.Anything).
+					Return(nil)
+				m.EXPECT().RemoveTag(mock.Anything, int64(42), "old-tag").Return(nil)
+				m.EXPECT().AddTag(mock.Anything, int64(42), "new-tag", mock.AnythingOfType("int64")).Return(nil)
+			},
+			wantStatus: http.StatusNoContent,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			tt.setupStore(store)
+			srv := newServer(t, store, 5)
+
+			w := doRequest(t, srv, http.MethodPatch, "/api/commands/a1b2c3d/metadata", tt.body)
+
+			assert.Equal(t, tt.wantStatus, w.Code)
+		})
+	}
+}
+
+func TestHandlePatchMetadata_BroadcastsTagsUpdatedOnlyWhenTagsChange(t *testing.T) {
+	tests := []struct {
+		name          string
+		body          any
+		wantBroadcast bool
+	}{
+		{
+			name:          "field_only_update_does_not_broadcast",
+			body:          map[string]any{"operator": "alice"},
+			wantBroadcast: false,
+		},
+		{
+			name:          "add_tag_broadcasts",
+			body:          map[string]any{"addTags": []string{"new-tag"}},
+			wantBroadcast: true,
+		},
+		{
+			name:          "remove_tag_broadcasts",
+			body:          map[string]any{"removeTags": []string{"old-tag"}},
+			wantBroadcast: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			store.EXPECT().GetCommandByShortID(mock.Anything, "a1b2c3d").
+				Return(&db.Command{ID: 42, Command: "ls"}, nil)
+			store.EXPECT().GetCommandMetadata(mock.Anything, int64(42)).
+				Return(&db.CommandMetadata{CommandID: 42}, nil)
+			store.EXPECT().UpsertCommandMetadata(mock.Anything, mock.Anything).Return(nil)
+			store.EXPECT().RemoveTag(mock.Anything, int64(42), mock.Anything).Return(nil).Maybe()
+			store.EXPECT().AddTag(mock.Anything, int64(42), mock.Anything, mock.AnythingOfType("int64")).Return(nil).Maybe()
+
+			broker := events.New()
+			sub := broker.Subscribe()
+			defer broker.Unsubscribe(sub)
+			srv := api.New(store, 5, broker, nil)
+
+			w := doRequest(t, srv, http.MethodPatch, "/api/commands/a1b2c3d/metadata", tt.body)
+			require.Equal(t, http.StatusNoContent, w.Code)
+
+			select {
+			case e := <-sub:
+				if !tt.wantBroadcast {
+					t.Fatalf("unexpected broadcast: %+v", e)
+				}
+				assert.Equal(t, "tags_updated", e.Type)
+			case <-time.After(100 * time.Millisecond):
+				if tt.wantBroadcast {
+					t.Fatal("expected tags_updated event to be broadcast")
+				}
+			}
 		})
 	}
 }

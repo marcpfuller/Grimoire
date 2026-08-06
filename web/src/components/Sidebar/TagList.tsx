@@ -45,8 +45,8 @@ export function TagList({ tags, paneNameById, selectedCmdId, setSelectedCmdId }:
               {items.map(tag => (
                 <div
                   key={tag.id}
-                  className={`flex items-center pl-8 pr-2 py-1.5 cursor-pointer w-full ${selectedCmdId === tag.commandId ? 'bg-vscode-active text-white' : 'text-vscode-text hover:bg-vscode-hover hover:text-white'}`}
-                  onClick={() => setSelectedCmdId(tag.commandId)}
+                  className={`flex items-center pl-8 pr-2 py-1.5 cursor-pointer w-full ${selectedCmdId === tag.shortId ? 'bg-vscode-active text-white' : 'text-vscode-text hover:bg-vscode-hover hover:text-white'}`}
+                  onClick={() => setSelectedCmdId(tag.shortId)}
                 >
                   <div className="flex flex-col w-full min-w-0">
                     <div className="flex items-center justify-between w-full">

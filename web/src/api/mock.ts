@@ -22,9 +22,12 @@ const MOCK_SESSIONS: Session[] = [
 ]
 
 const MOCK_TAGS: Tag[] = [
-  { id: 'tag1', commandId: 'abc0001', shortId: 'abc0001', label: 'Reconnaissance', commandText: 'nmap -sC -sV 10.0.0.5', paneId: 'pane-a1b2', createdAt: '2h ago' },
-  { id: 'tag2', commandId: 'abc0002', shortId: 'abc0002', label: 'Web', commandText: 'ffuf -w wordlist.txt -u http://10.0.0.5/FUZZ', paneId: 'pane-a1b2', createdAt: '1h ago' },
-  { id: 'tag3', commandId: 'abc0003', shortId: 'abc0003', label: 'Credential Access', commandText: 'cat /etc/passwd', paneId: 'pane-a1b2', createdAt: '30m ago' },
+  // commandId is the raw database primary key (distinct from shortId, as it is
+  // in the real backend) so mock data exercises the same id mismatch the real
+  // API produces instead of masking it.
+  { id: 'tag1', commandId: '1', shortId: 'abc0001', label: 'Reconnaissance', commandText: 'nmap -sC -sV 10.0.0.5', paneId: 'pane-a1b2', createdAt: '2h ago' },
+  { id: 'tag2', commandId: '2', shortId: 'abc0002', label: 'Web', commandText: 'ffuf -w wordlist.txt -u http://10.0.0.5/FUZZ', paneId: 'pane-a1b2', createdAt: '1h ago' },
+  { id: 'tag3', commandId: '3', shortId: 'abc0003', label: 'Credential Access', commandText: 'cat /etc/passwd', paneId: 'pane-a1b2', createdAt: '30m ago' },
 ]
 
 const MOCK_OUTPUT = `Starting Nmap 7.94 ( https://nmap.org ) at 2024-05-20 14:32 UTC

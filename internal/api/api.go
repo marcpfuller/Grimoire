@@ -350,6 +350,10 @@ func (s *Server) handleTag(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	s.broadcast(events.Event{
+		Type: "tags_updated",
+		Data: map[string]any{"short_id": req.ShortID, "command_id": cmd.ID, "label": req.Label},
+	})
 }
 
 // handleDeregister handles POST /api/deregister.
@@ -503,6 +507,12 @@ func (s *Server) handlePatchMetadata(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	if len(req.AddTags) > 0 || len(req.RemoveTags) > 0 {
+		s.broadcast(events.Event{
+			Type: "tags_updated",
+			Data: map[string]any{"short_id": shortID, "command_id": cmd.ID},
+		})
+	}
 }
 
 // --- helpers ---
@@ -884,8 +894,8 @@ func (s *Server) handleShutdown(w http.ResponseWriter, _ *http.Request) {
 // auth middleware (auth.Middleware) also accepts the bearer token via the
 // "?token=" query parameter for this endpoint only.
 //
-// Event types: command_started, command_finished, session_registered,
-// session_deregistered.
+// Event types: command_started, command_finished, command_synced,
+// session_registered, session_deregistered, tags_updated.
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
