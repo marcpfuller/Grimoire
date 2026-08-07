@@ -35,7 +35,7 @@ type Command struct {
 	ID        int64
 	ShortID   string // 7-hex operator tag, e.g. "a1b2c3d"
 	PaneID    string
-	OplogID   int    // Ghostwriter oplog ID, derived via JOIN on panes at read time
+	OplogID   int    // pane oplog, or the recorded remote target after a successful override push
 	OplogName string // oplog display name, derived via JOIN on panes at read time
 	Seq       int64  // sequential position within the pane
 	Command   string
@@ -43,7 +43,11 @@ type Command struct {
 	StartedAt int64  // Unix ms
 	EndedAt   *int64 // Unix ms; nil until FinalizeCommand is called
 	ExitCode  *int   // shell exit status; nil until FinalizeCommand is called
-	SyncedGW  bool   // true after a successful Ghostwriter push
+	SyncedGW  bool   // true after this command has been created in Ghostwriter
+	// SyncRevision increments whenever metadata changes. SyncPending remains
+	// true until that exact revision (or a newer one) is pushed successfully.
+	SyncRevision int64
+	SyncPending  bool
 }
 
 // OutputChunk is one streamed PTY read captured during a command's execution.
@@ -74,9 +78,9 @@ type TagWithCommand struct {
 	CreatedAt   int64 // Unix ms
 }
 
-// CommandMetadata stores operator-supplied annotations for a command.
-// The Tool field defaults to the first token of Command.Command when no row
-// has been saved yet; all other fields default to empty string.
+// CommandMetadata stores operator-supplied annotations for a command. When no
+// row exists, DefaultCommandMetadata supplies the tool and outcome description
+// used by both the API and Ghostwriter sync.
 type CommandMetadata struct {
 	CommandID     int64
 	Operator      string
@@ -131,13 +135,18 @@ type Store interface {
 	GetCommandByShortID(ctx context.Context, shortID string) (*Command, error)
 	ListCommandsByPane(ctx context.Context, paneID string) ([]*Command, error)
 	GetCommandsByPaneSeqRange(ctx context.Context, paneID string, firstSeq, lastSeq int64) ([]*Command, error)
+	// ListUnsynced returns finalized commands that have never been pushed or
+	// whose metadata revision is newer than the last successful push.
 	ListUnsynced(ctx context.Context) ([]*Command, error)
 	// DeleteCommandByShortID atomically deletes a command and all of its
 	// output chunks, tags, and metadata. Returns ErrNotFound when shortID does
 	// not identify a command.
 	DeleteCommandByShortID(ctx context.Context, shortID string) error
 	FinalizeCommand(ctx context.Context, shortID string, endedAt int64, exitCode int) error
-	MarkCommandSynced(ctx context.Context, commandID int64) error
+	// MarkCommandSynced records the successful remote oplog and syncRevision.
+	// A stale completion moves the stored revision backward so the latest local
+	// metadata remains pending and is retried.
+	MarkCommandSynced(ctx context.Context, commandID int64, oplogID int, syncRevision int64) error
 	// ShortIDExists is a diagnostic utility that reports whether shortID is
 	// already in use in commands or pending_commands. It is NOT in the critical
 	// path — the API handler for GET /api/next-id should retry on ErrConflict
@@ -157,6 +166,8 @@ type Store interface {
 
 	// Metadata
 	GetCommandMetadata(ctx context.Context, commandID int64) (*CommandMetadata, error)
+	// UpsertCommandMetadata atomically saves metadata and advances the command's
+	// local sync revision so an existing Ghostwriter entry will be refreshed.
 	UpsertCommandMetadata(ctx context.Context, m *CommandMetadata) error
 
 	// Lifecycle

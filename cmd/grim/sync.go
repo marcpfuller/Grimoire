@@ -10,18 +10,19 @@ import (
 
 var syncCmd = &cobra.Command{
 	Use:   "sync <short-id>",
-	Short: "Push a single unsynced command to Ghostwriter immediately",
+	Short: "Push a new or locally updated command to Ghostwriter immediately",
 	Long: `Push a specific command to Ghostwriter by its short ID.
 
 Use this command when ghostwriter.auto_sync is false and you want to
 manually select which commands to send to the oplog.
 
-The command must exist and must not already be synced. Use 'grim history'
-or the web UI to find short IDs.
+The command must exist and either be unsynced or have a pending metadata
+update. Use 'grim history' or the web UI to find short IDs.
 
 If the shell session was started without --oplog, use --oplog here to
-supply a numeric Ghostwriter oplog ID for this push. The ID is used once
-and is not persisted to the database.`,
+supply a numeric Ghostwriter oplog ID for this push. A successful push records
+that ID as the remote entry's target for future metadata updates; it does not
+change the shell pane's oplog selection.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		shortID := args[0]

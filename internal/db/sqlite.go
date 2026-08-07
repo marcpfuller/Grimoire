@@ -30,7 +30,10 @@ CREATE TABLE IF NOT EXISTS commands (
     started_at INTEGER NOT NULL,
     ended_at   INTEGER,
     exit_code  INTEGER,
-    synced_gw  INTEGER NOT NULL DEFAULT 0,
+    synced_gw       INTEGER NOT NULL DEFAULT 0,
+    synced_oplog_id INTEGER NOT NULL DEFAULT 0,
+    sync_revision   INTEGER NOT NULL DEFAULT 0,
+    synced_revision INTEGER NOT NULL DEFAULT 0,
     UNIQUE(pane_id, seq)
 );
 
@@ -151,6 +154,8 @@ type migration struct {
 //	    backfilling any pre-existing rows left with the empty default.
 //	11: make command row IDs permanently monotonic so stale PTY and sync
 //	    references can never resolve to a different command after deletion.
+//	12: track the successful remote oplog plus local and pushed metadata
+//	    revisions so edits retry without inserting duplicate entries.
 var migrations = []migration{
 	{
 		version: 1,
@@ -205,6 +210,18 @@ var migrations = []migration{
 	{
 		version: 11,
 		fn:      ensureCommandIDsAutoincrement,
+	},
+	{
+		version: 12,
+		fn: func(db *sql.DB) error {
+			if err := addColumnIfMissing("commands", "synced_oplog_id", "INTEGER NOT NULL DEFAULT 0")(db); err != nil {
+				return err
+			}
+			if err := addColumnIfMissing("commands", "sync_revision", "INTEGER NOT NULL DEFAULT 0")(db); err != nil {
+				return err
+			}
+			return addColumnIfMissing("commands", "synced_revision", "INTEGER NOT NULL DEFAULT 0")(db)
+		},
 	},
 }
 
@@ -716,13 +733,16 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 	cmd := &Command{}
 	var syncedGW int64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.oplog_id, p.oplog_name, c.seq, c.command, c.prompt,
-		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
+		`SELECT c.id, c.short_id, c.pane_id,
+		        CASE WHEN c.synced_gw != 0 AND c.synced_oplog_id != 0 THEN c.synced_oplog_id ELSE p.oplog_id END,
+		        p.oplog_name, c.seq, c.command, c.prompt,
+		        c.started_at, c.ended_at, c.exit_code, c.synced_gw, c.sync_revision,
+		        c.sync_revision > c.synced_revision
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.short_id = ?`,
 		shortID,
 	).Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.OplogID, &cmd.OplogName, &cmd.Seq, &cmd.Command, &cmd.Prompt,
-		&cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW)
+		&cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW, &cmd.SyncRevision, &cmd.SyncPending)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -735,8 +755,11 @@ func (s *sqliteStore) GetCommandByShortID(ctx context.Context, shortID string) (
 
 func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.oplog_id, p.oplog_name, c.seq, c.command, c.prompt,
-		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
+		`SELECT c.id, c.short_id, c.pane_id,
+		        CASE WHEN c.synced_gw != 0 AND c.synced_oplog_id != 0 THEN c.synced_oplog_id ELSE p.oplog_id END,
+		        p.oplog_name, c.seq, c.command, c.prompt,
+		        c.started_at, c.ended_at, c.exit_code, c.synced_gw, c.sync_revision,
+		        c.sync_revision > c.synced_revision
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.pane_id = ? ORDER BY c.seq`,
 		paneID,
@@ -755,8 +778,11 @@ func (s *sqliteStore) ListCommandsByPane(ctx context.Context, paneID string) (cm
 
 func (s *sqliteStore) GetCommandsByPaneSeqRange(ctx context.Context, paneID string, firstSeq, lastSeq int64) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.oplog_id, p.oplog_name, c.seq, c.command, c.prompt,
-		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
+		`SELECT c.id, c.short_id, c.pane_id,
+		        CASE WHEN c.synced_gw != 0 AND c.synced_oplog_id != 0 THEN c.synced_oplog_id ELSE p.oplog_id END,
+		        p.oplog_name, c.seq, c.command, c.prompt,
+		        c.started_at, c.ended_at, c.exit_code, c.synced_gw, c.sync_revision,
+		        c.sync_revision > c.synced_revision
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
 		 WHERE c.pane_id = ? AND c.seq >= ? AND c.seq <= ? ORDER BY c.seq`,
 		paneID, firstSeq, lastSeq,
@@ -775,10 +801,14 @@ func (s *sqliteStore) GetCommandsByPaneSeqRange(ctx context.Context, paneID stri
 
 func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err error) {
 	rows, qErr := s.db.QueryContext(ctx,
-		`SELECT c.id, c.short_id, c.pane_id, p.oplog_id, p.oplog_name, c.seq, c.command, c.prompt,
-		        c.started_at, c.ended_at, c.exit_code, c.synced_gw
+		`SELECT c.id, c.short_id, c.pane_id,
+		        CASE WHEN c.synced_gw != 0 AND c.synced_oplog_id != 0 THEN c.synced_oplog_id ELSE p.oplog_id END,
+		        p.oplog_name, c.seq, c.command, c.prompt,
+		        c.started_at, c.ended_at, c.exit_code, c.synced_gw, c.sync_revision,
+		        c.sync_revision > c.synced_revision
 		 FROM commands c JOIN panes p ON p.id = c.pane_id
-		 WHERE c.synced_gw = 0 AND c.ended_at IS NOT NULL ORDER BY c.id`,
+		 WHERE (c.synced_gw = 0 OR c.sync_revision > c.synced_revision)
+		   AND c.ended_at IS NOT NULL ORDER BY c.id`,
 	)
 	if qErr != nil {
 		return nil, qErr
@@ -885,10 +915,14 @@ func (s *sqliteStore) FinalizeCommand(ctx context.Context, shortID string, ended
 	return nil
 }
 
-func (s *sqliteStore) MarkCommandSynced(ctx context.Context, commandID int64) error {
+func (s *sqliteStore) MarkCommandSynced(ctx context.Context, commandID int64, oplogID int, syncRevision int64) error {
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE commands SET synced_gw = 1 WHERE id = ?`,
-		commandID,
+		`UPDATE commands
+		 SET synced_gw = 1,
+		     synced_oplog_id = CASE WHEN ? != 0 THEN ? ELSE synced_oplog_id END,
+		     synced_revision = MIN(?, sync_revision)
+		 WHERE id = ?`,
+		oplogID, oplogID, syncRevision, commandID,
 	)
 	if err != nil {
 		return err
@@ -1073,7 +1107,13 @@ func (s *sqliteStore) GetCommandMetadata(ctx context.Context, commandID int64) (
 }
 
 func (s *sqliteStore) UpsertCommandMetadata(ctx context.Context, m *CommandMetadata) error {
-	_, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("db: begin metadata upsert: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	if _, err = tx.ExecContext(ctx,
 		`INSERT INTO command_metadata
 		     (command_id, operator, tool, user_context, source_ip, destination_ip, description, comments, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -1088,8 +1128,27 @@ func (s *sqliteStore) UpsertCommandMetadata(ctx context.Context, m *CommandMetad
 		     updated_at     = excluded.updated_at`,
 		m.CommandID, m.Operator, m.Tool, m.UserContext, m.SourceIP,
 		m.DestinationIP, m.Description, m.Comments, m.UpdatedAt,
+	); err != nil {
+		return fmt.Errorf("db: upsert command metadata: %w", err)
+	}
+	res, err := tx.ExecContext(ctx,
+		`UPDATE commands SET sync_revision = sync_revision + 1 WHERE id = ?`,
+		m.CommandID,
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("db: queue metadata sync: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("db: count queued metadata sync: %w", err)
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("db: commit metadata upsert: %w", err)
+	}
+	return nil
 }
 
 // --- Helpers ---
@@ -1100,7 +1159,8 @@ func scanCommands(rows *sql.Rows) ([]*Command, error) {
 		cmd := &Command{}
 		var syncedGW int64
 		if err := rows.Scan(&cmd.ID, &cmd.ShortID, &cmd.PaneID, &cmd.OplogID, &cmd.OplogName, &cmd.Seq,
-			&cmd.Command, &cmd.Prompt, &cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW); err != nil {
+			&cmd.Command, &cmd.Prompt, &cmd.StartedAt, &cmd.EndedAt, &cmd.ExitCode, &syncedGW,
+			&cmd.SyncRevision, &cmd.SyncPending); err != nil {
 			return nil, err
 		}
 		cmd.SyncedGW = syncedGW != 0

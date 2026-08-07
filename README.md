@@ -253,18 +253,20 @@ oplogs. Grimoire builds an oplog-to-token routing map; a failed token is skipped
 when at least one other token initializes successfully. Commands inherit the
 selected oplog from their pane.
 
-Automatic sync processes finalized, unsynced commands on the configured
-interval. Set `ghostwriter.auto_sync` to `false` to retain commands locally
-until explicitly pushed:
+Automatic sync processes finalized commands that are new or have metadata
+changes pending on the configured interval. Set `ghostwriter.auto_sync` to
+`false` to retain changes locally until explicitly pushed:
 
 ```bash
 grim sync a1b2c3d
 grim sync a1b2c3d --oplog 42
 ```
 
-The `--oplog` override applies only to that push and is not persisted. A
-successful push inserts a Ghostwriter OplogEntry containing command text,
-cleaned output, timestamps, and the Grimoire short ID.
+The `--oplog` override does not change the pane's oplog selection. After a
+successful push, Grimoire retains the remote target so later metadata edits can
+update the same entry. A successful first push inserts a Ghostwriter OplogEntry
+containing command text, cleaned output, timestamps, metadata, and the Grimoire
+short ID.
 
 The config API hot-applies changes to the sync interval, automatic-sync flag,
 and log level. `cast.dir` is read on the next export. Ghostwriter URL/token

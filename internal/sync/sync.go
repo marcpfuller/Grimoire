@@ -54,7 +54,8 @@ type Config struct {
 	OnSynced func(shortID string)
 }
 
-// Syncer runs a background loop that pushes unsynced commands to Ghostwriter.
+// Syncer runs a background loop that pushes new and locally-updated commands
+// to Ghostwriter.
 type Syncer struct {
 	store   db.Store
 	mu      stdsync.RWMutex
@@ -95,7 +96,7 @@ func (s *Syncer) SetInterval(d time.Duration) {
 }
 
 // SetAutoSync updates the auto-sync flag at runtime. When enabled the
-// background loop resumes pushing all unsynced commands on the next tick.
+// background loop resumes pushing pending commands on the next tick.
 // Safe to call from any goroutine.
 func (s *Syncer) SetAutoSync(enabled bool) {
 	s.mu.Lock()
@@ -156,9 +157,10 @@ func (s *Syncer) Run(ctx context.Context) {
 	}
 }
 
-// syncBatch fetches all unsynced commands and pushes them one at a time.
+// syncBatch fetches all new or locally-updated commands and pushes them one at a time.
 // Each command is best-effort: a failure is logged and the loop continues.
-// SyncedGW remains false on failure so the command is retried on the next tick.
+// Failed new commands remain unsynced; failed updates retain their pending
+// revision so either kind is retried on the next tick.
 //
 // Transient failures (network, 5xx) are logged at WARN.
 // Auth/config failures (*AuthError: 401, 403) are logged at ERROR — the
@@ -201,7 +203,7 @@ func (s *Syncer) syncBatch(ctx context.Context) {
 			}
 			continue
 		}
-		if err := s.store.MarkCommandSynced(ctx, cmd.ID); err != nil {
+		if err := s.store.MarkCommandSynced(ctx, cmd.ID, cmd.OplogID, cmd.SyncRevision); err != nil {
 			s.logWarn("sync: MarkCommandSynced failed", "command_id", cmd.ID, "err", err)
 		} else if s.cfg.OnSynced != nil {
 			s.cfg.OnSynced(cmd.ShortID)
@@ -228,15 +230,17 @@ func (s *Syncer) logError(msg string, args ...any) {
 }
 
 // PushOne looks up the command identified by shortID and pushes it to
-// Ghostwriter immediately, regardless of the AutoSync setting. It is an
-// error if the command does not exist, has already been synced, or has no
-// oplog ID. Use PushOneWithOplog to supply an oplog ID at push time.
+// Ghostwriter immediately, regardless of the AutoSync setting. A previously
+// synced command is allowed when it has a pending metadata revision. It is an
+// error if the command does not exist, is already current, or has no oplog ID.
+// Use PushOneWithOplog to supply an oplog ID at push time.
 func (s *Syncer) PushOne(ctx context.Context, shortID string) error {
 	return s.pushOne(ctx, shortID, 0)
 }
 
-// PushOneWithOplog is like PushOne but overrides the command's oplog ID for
-// this push only — the DB is not updated. oplogID must be non-zero.
+// PushOneWithOplog is like PushOne but overrides the command's oplog ID.
+// A successful initial push records that remote target for future updates
+// without changing the owning pane's oplog. oplogID must be non-zero.
 func (s *Syncer) PushOneWithOplog(ctx context.Context, shortID string, oplogID int) error {
 	return s.pushOne(ctx, shortID, oplogID)
 }
@@ -246,7 +250,7 @@ func (s *Syncer) pushOne(ctx context.Context, shortID string, oplogOverride int)
 	if err != nil {
 		return fmt.Errorf("sync: command %q not found: %w", shortID, err)
 	}
-	if cmd.SyncedGW {
+	if cmd.SyncedGW && !cmd.SyncPending {
 		return fmt.Errorf("sync: command %q is already synced to Ghostwriter", shortID)
 	}
 
@@ -269,7 +273,7 @@ func (s *Syncer) pushOne(ctx context.Context, shortID string, oplogOverride int)
 	if err := pusher.PushCommand(ctx, &pushCmd); err != nil {
 		return fmt.Errorf("sync: push %q: %w", shortID, err)
 	}
-	if err := s.store.MarkCommandSynced(ctx, cmd.ID); err != nil {
+	if err := s.store.MarkCommandSynced(ctx, cmd.ID, pushCmd.OplogID, cmd.SyncRevision); err != nil {
 		s.logWarn("sync: MarkCommandSynced failed", "command_id", cmd.ID, "err", err)
 		return fmt.Errorf("sync: mark synced %q: %w", shortID, err)
 	}
