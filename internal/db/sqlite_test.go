@@ -296,7 +296,7 @@ func TestMarkCommandSynced(t *testing.T) {
 	require.NoError(t, s.CreateCommand(ctx, cmd))
 
 	t.Run("success", func(t *testing.T) {
-		require.NoError(t, s.MarkCommandSynced(ctx, cmd.ID))
+		require.NoError(t, s.MarkCommandSynced(ctx, cmd.ID, cmd.OplogID, cmd.SyncRevision))
 
 		got, err := s.GetCommandByShortID(ctx, "syn0001")
 		require.NoError(t, err)
@@ -304,7 +304,7 @@ func TestMarkCommandSynced(t *testing.T) {
 	})
 
 	t.Run("not_found", func(t *testing.T) {
-		err := s.MarkCommandSynced(ctx, 99999)
+		err := s.MarkCommandSynced(ctx, 99999, 0, 0)
 		require.ErrorIs(t, err, db.ErrNotFound)
 	})
 }
@@ -537,12 +537,100 @@ func TestListUnsynced(t *testing.T) {
 	cmd3 := &db.Command{PaneID: "pane-A", Command: "pwd", StartedAt: 1300}
 	require.NoError(t, s.CreateCommand(ctx, cmd3))
 	require.NoError(t, s.FinalizeCommand(ctx, "u000003", 1400, 0))
-	require.NoError(t, s.MarkCommandSynced(ctx, cmd3.ID))
+	require.NoError(t, s.MarkCommandSynced(ctx, cmd3.ID, cmd3.OplogID, cmd3.SyncRevision))
 
 	unsynced, err := s.ListUnsynced(ctx)
 	require.NoError(t, err)
 	require.Len(t, unsynced, 1)
 	assert.Equal(t, "u000001", unsynced[0].ShortID)
+}
+
+func TestMetadataEditQueuesSyncedCommand(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreatePane(ctx, "pane-A", 7, "Oplog 7", 1000, 220, 50))
+	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "dirty01"))
+	cmd := &db.Command{PaneID: "pane-A", Command: "whoami", StartedAt: 1000}
+	require.NoError(t, s.CreateCommand(ctx, cmd))
+	require.NoError(t, s.FinalizeCommand(ctx, cmd.ShortID, 1100, 0))
+	require.NoError(t, s.MarkCommandSynced(ctx, cmd.ID, cmd.OplogID, cmd.SyncRevision))
+
+	pending, err := s.ListUnsynced(ctx)
+	require.NoError(t, err)
+	require.Empty(t, pending)
+
+	require.NoError(t, s.UpsertCommandMetadata(ctx, &db.CommandMetadata{
+		CommandID:   cmd.ID,
+		Operator:    "alice",
+		Description: "enumerate the current user",
+		UpdatedAt:   1200,
+	}))
+
+	pending, err = s.ListUnsynced(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, cmd.ShortID, pending[0].ShortID)
+	assert.True(t, pending[0].SyncedGW, "the pending write must update the existing Ghostwriter row")
+	assert.True(t, pending[0].SyncPending)
+	firstRevision := pending[0].SyncRevision
+
+	// A second edit racing with completion of the first push must remain queued.
+	require.NoError(t, s.UpsertCommandMetadata(ctx, &db.CommandMetadata{
+		CommandID: cmd.ID,
+		Operator:  "bob",
+		UpdatedAt: 1300,
+	}))
+	require.NoError(t, s.MarkCommandSynced(ctx, cmd.ID, cmd.OplogID, firstRevision))
+
+	pending, err = s.ListUnsynced(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1, "a newer edit must survive completion of a stale push")
+	assert.Greater(t, pending[0].SyncRevision, firstRevision)
+
+	latestRevision := pending[0].SyncRevision
+	require.NoError(t, s.MarkCommandSynced(ctx, cmd.ID, cmd.OplogID, latestRevision))
+	pending, err = s.ListUnsynced(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, pending)
+
+	// A slower, older push completing after the latest one overwrites the remote
+	// row with stale metadata, so the latest local revision must be re-queued.
+	require.NoError(t, s.MarkCommandSynced(ctx, cmd.ID, cmd.OplogID, firstRevision))
+	pending, err = s.ListUnsynced(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, latestRevision, pending[0].SyncRevision)
+	assert.True(t, pending[0].SyncPending)
+	latestMetadata, err := s.GetCommandMetadata(ctx, cmd.ID)
+	require.NoError(t, err)
+	assert.Equal(t, "bob", latestMetadata.Operator, "the retry must reload the newest metadata")
+	require.NoError(t, s.MarkCommandSynced(ctx, cmd.ID, cmd.OplogID, pending[0].SyncRevision))
+	pending, err = s.ListUnsynced(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, pending, "the successful retry must clear the latest revision")
+}
+
+func TestMetadataEditUsesOriginalOverrideOplog(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreatePane(ctx, "pane-A", 0, "", 1000, 220, 50))
+	require.NoError(t, s.ReserveShortID(ctx, "pane-A", "overrid"))
+	cmd := &db.Command{PaneID: "pane-A", Command: "hostname", StartedAt: 1000}
+	require.NoError(t, s.CreateCommand(ctx, cmd))
+	require.NoError(t, s.FinalizeCommand(ctx, cmd.ShortID, 1100, 0))
+	require.NoError(t, s.MarkCommandSynced(ctx, cmd.ID, 42, cmd.SyncRevision))
+	require.NoError(t, s.UpsertCommandMetadata(ctx, &db.CommandMetadata{
+		CommandID: cmd.ID,
+		Operator:  "alice",
+		UpdatedAt: 1200,
+	}))
+
+	pending, err := s.ListUnsynced(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.Equal(t, 42, pending[0].OplogID, "updates must target the oplog used by the original override push")
 }
 
 func TestShortIDExists(t *testing.T) {
@@ -1076,4 +1164,53 @@ func TestMigrationV11CommandIDsAutoincrement(t *testing.T) {
 	created := &db.Command{PaneID: "legacy-pane", Command: "hostname", StartedAt: 3000}
 	require.NoError(t, s.CreateCommand(context.Background(), created))
 	assert.Greater(t, created.ID, legacy.ID)
+}
+
+func TestMigrationV12MetadataSyncRevisions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "migration_v12.db")
+	ctx := context.Background()
+
+	// Seed a command that was already synced under the version-11 model.
+	s1, err := db.Open(path)
+	require.NoError(t, err)
+	require.NoError(t, s1.CreatePane(ctx, "legacy-pane", 7, "Oplog 7", 1000, 220, 50))
+	require.NoError(t, s1.ReserveShortID(ctx, "legacy-pane", "legacy2"))
+	cmd := &db.Command{PaneID: "legacy-pane", Command: "whoami", StartedAt: 1000}
+	require.NoError(t, s1.CreateCommand(ctx, cmd))
+	require.NoError(t, s1.FinalizeCommand(ctx, cmd.ShortID, 1100, 0))
+	require.NoError(t, s1.MarkCommandSynced(ctx, cmd.ID, 7, 0))
+	require.NoError(t, s1.Close())
+
+	// Recreate the version-11 shape, then let Open apply migration 12.
+	rawDB, err := sql.Open("sqlite", path)
+	require.NoError(t, err)
+	_, err = rawDB.Exec(`
+		ALTER TABLE commands DROP COLUMN synced_oplog_id;
+		ALTER TABLE commands DROP COLUMN sync_revision;
+		ALTER TABLE commands DROP COLUMN synced_revision;
+		PRAGMA user_version=11;
+	`)
+	require.NoError(t, err)
+	require.NoError(t, rawDB.Close())
+
+	s2, err := db.Open(path)
+	require.NoError(t, err)
+	defer s2.Close() //nolint:errcheck
+
+	pending, err := s2.ListUnsynced(ctx)
+	require.NoError(t, err)
+	assert.Empty(t, pending, "migration must not re-send every previously synced command")
+
+	require.NoError(t, s2.UpsertCommandMetadata(ctx, &db.CommandMetadata{
+		CommandID: cmd.ID,
+		Operator:  "alice",
+		UpdatedAt: 1200,
+	}))
+	pending, err = s2.ListUnsynced(ctx)
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+	assert.True(t, pending[0].SyncedGW)
+	assert.True(t, pending[0].SyncPending)
+	assert.Equal(t, 7, pending[0].OplogID)
 }

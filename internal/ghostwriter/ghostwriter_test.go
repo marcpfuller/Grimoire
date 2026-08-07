@@ -3,6 +3,8 @@ package ghostwriter_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -61,6 +63,10 @@ const testToken = "gw_test_token_abc123" //nolint:gosec // test credential only
 // to call PushCommand without a real Init round-trip.
 func newTestClient(t *testing.T, store db.Store, url string, hc *http.Client) *ghostwriter.Client {
 	t.Helper()
+	if ms, ok := store.(*dbmocks.MockStore); ok {
+		ms.On("GetCommandMetadata", mock.Anything, mock.Anything).
+			Return((*db.CommandMetadata)(nil), db.ErrNotFound).Maybe()
+	}
 	c := ghostwriter.NewWithHTTP(store, url, testToken, hc, nil)
 	ghostwriter.SetOplogsForTest(c, []ghostwriter.OplogEntry{{ID: 7, ProjectID: 42, Name: "Test Oplog"}})
 	return c
@@ -111,6 +117,129 @@ func TestPushCommand_OutputAssemblyAndANSIStrip(t *testing.T) {
 	// Plain text content must be preserved.
 	assert.Contains(t, payload.Variables.Output, "total 8")
 	assert.Contains(t, payload.Variables.Output, "drwxr-xr-x")
+}
+
+func TestPushCommand_MissingMetadataUsesCommandDefaults(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(validGQLResponse))
+	}))
+	t.Cleanup(srv.Close)
+
+	cmd := *finishedCmd
+	cmd.Command = "cat /etc/hosts"
+	cmd.ExitCode = ptrInt(0)
+	ms := dbmocks.NewMockStore(t)
+	ms.On("GetOutputChunks", mock.Anything, cmd.ID).Return([]*db.OutputChunk{}, nil)
+
+	client := newTestClient(t, ms, srv.URL, srv.Client())
+	require.NoError(t, client.PushCommand(context.Background(), &cmd))
+
+	var payload struct {
+		Variables struct {
+			Tool        string `json:"tool"`
+			Description string `json:"description"`
+		} `json:"variables"`
+	}
+	require.NoError(t, json.Unmarshal(capturedBody, &payload))
+	assert.Equal(t, "cat", payload.Variables.Tool)
+	assert.Equal(t, "Command Executed", payload.Variables.Description)
+}
+
+func TestPushCommand_PreviouslySyncedUsesUpdateMutation(t *testing.T) {
+	var capturedBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"update_oplogEntry":{"affected_rows":1}}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cmd := *finishedCmd
+	cmd.SyncedGW = true
+	ms := dbmocks.NewMockStore(t)
+	ms.On("GetOutputChunks", context.Background(), cmd.ID).Return(simpleChunks, nil)
+	ms.On("GetCommandMetadata", context.Background(), cmd.ID).Return(&db.CommandMetadata{
+		CommandID:     cmd.ID,
+		Operator:      "alice",
+		Tool:          "nmap",
+		UserContext:   "CORP\\alice",
+		SourceIP:      "10.0.0.10",
+		DestinationIP: "10.0.0.20",
+		Description:   "enumerate services",
+		Comments:      "approved window",
+	}, nil).Once()
+
+	client := newTestClient(t, ms, srv.URL, srv.Client())
+	require.NoError(t, client.PushCommand(context.Background(), &cmd))
+
+	var payload struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	require.NoError(t, json.Unmarshal(capturedBody, &payload))
+	assert.Contains(t, payload.Query, "GrimoireUpdateOplogEntry")
+	assert.NotContains(t, payload.Query, "insert_oplogEntry_one")
+	assert.Contains(t, payload.Query, "startDate: {_eq: $start_date}")
+	assert.InDelta(t, 7, payload.Variables["oplog_id"], 0)
+	assert.Equal(t, cmd.ShortID, payload.Variables["entry_identifier"])
+	assert.Equal(t, "alice", payload.Variables["operator_name"])
+	assert.Equal(t, "nmap", payload.Variables["tool"])
+	assert.Equal(t, "CORP\\alice", payload.Variables["user_context"])
+	assert.Equal(t, "10.0.0.10", payload.Variables["source_ip"])
+	assert.Equal(t, "10.0.0.20", payload.Variables["dest_ip"])
+	assert.Equal(t, "enumerate services", payload.Variables["description"])
+	assert.Equal(t, "approved window", payload.Variables["comments"])
+	assert.Contains(t, payload.Variables["output"], "total 8")
+}
+
+func TestPushCommand_UpdateMustMatchExactlyOneEntry(t *testing.T) {
+	tests := []struct {
+		name         string
+		affectedRows int
+	}{
+		{name: "missing_remote_entry", affectedRows: 0},
+		{name: "duplicate_remote_entries", affectedRows: 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := fmt.Sprintf(`{"data":{"update_oplogEntry":{"affected_rows":%d}}}`, tt.affectedRows)
+			srv, _ := newServer(t, http.StatusOK, response)
+			cmd := *finishedCmd
+			cmd.SyncedGW = true
+			ms := dbmocks.NewMockStore(t)
+			ms.On("GetOutputChunks", mock.Anything, cmd.ID).Return(simpleChunks, nil)
+
+			client := newTestClient(t, ms, srv.URL, srv.Client())
+			err := client.PushCommand(context.Background(), &cmd)
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), fmt.Sprintf("matched %d entries", tt.affectedRows))
+		})
+	}
+}
+
+func TestPushCommand_MetadataLoadFailureStopsBeforeHTTP(t *testing.T) {
+	requestCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requestCount++
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	ms.On("GetOutputChunks", mock.Anything, finishedCmd.ID).Return(simpleChunks, nil)
+	ms.On("GetCommandMetadata", mock.Anything, finishedCmd.ID).Return(nil, errors.New("db down")).Once()
+	client := newTestClient(t, ms, srv.URL, srv.Client())
+
+	err := client.PushCommand(context.Background(), finishedCmd)
+	require.Error(t, err)
+	require.ErrorContains(t, err, "load command metadata")
+	assert.Zero(t, requestCount)
 }
 
 func TestPushCommand_HTTP401_ReturnsAuthError(t *testing.T) {
@@ -188,6 +317,8 @@ func TestPushCommand_UnexpectedHTTPStatus_ReturnsPlainError(t *testing.T) {
 func TestPushCommand_NetworkError_ReturnsPlainError(t *testing.T) {
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return([]*db.OutputChunk{}, nil)
+	ms.On("GetCommandMetadata", context.Background(), finishedCmd.ID).
+		Return((*db.CommandMetadata)(nil), db.ErrNotFound)
 
 	client := ghostwriter.NewWithHTTP(ms, "http://127.0.0.1:1", testToken, &http.Client{Timeout: 100 * time.Millisecond}, nil)
 	ghostwriter.SetOplogsForTest(client, []ghostwriter.OplogEntry{{ID: 7}}) // bypass Init; test only the push network error
@@ -262,6 +393,8 @@ func TestInit_HappyPath(t *testing.T) {
 
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", context.Background(), finishedCmd.ID).Return(simpleChunks, nil)
+	ms.On("GetCommandMetadata", context.Background(), finishedCmd.ID).
+		Return((*db.CommandMetadata)(nil), db.ErrNotFound)
 
 	client := ghostwriter.NewWithHTTP(ms, srv.URL, testToken, srv.Client(), nil)
 
@@ -574,6 +707,8 @@ func TestMultiClient_PushCommand_RoutesToCorrectClient(t *testing.T) {
 
 	ms := dbmocks.NewMockStore(t)
 	ms.On("GetOutputChunks", mock.Anything, finishedCmd.ID).Return(simpleChunks, nil)
+	ms.On("GetCommandMetadata", mock.Anything, finishedCmd.ID).
+		Return((*db.CommandMetadata)(nil), db.ErrNotFound)
 
 	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{"tok_for_oplog42"}, srv.Client(), nil)
 	require.NoError(t, mc.Init(context.Background()))

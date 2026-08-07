@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -201,6 +202,12 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 		return fmt.Errorf("ghostwriter: load output chunks: %w", err)
 	}
 	output := assembleOutput(chunks)
+	metadata, err := c.store.GetCommandMetadata(ctx, cmd.ID)
+	if errors.Is(err, db.ErrNotFound) {
+		metadata = db.DefaultCommandMetadata(cmd)
+	} else if err != nil {
+		return fmt.Errorf("ghostwriter: load command metadata: %w", err)
+	}
 
 	// --- Build GraphQL request ---
 	vars := map[string]any{
@@ -209,13 +216,24 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 		"output":           output,
 		"start_date":       msToRFC3339(cmd.StartedAt),
 		"entry_identifier": cmd.ShortID,
+		"operator_name":    metadata.Operator,
+		"tool":             metadata.Tool,
+		"user_context":     metadata.UserContext,
+		"source_ip":        metadata.SourceIP,
+		"dest_ip":          metadata.DestinationIP,
+		"description":      metadata.Description,
+		"comments":         metadata.Comments,
 	}
 	if cmd.EndedAt != nil {
 		vars["end_date"] = msToRFC3339(*cmd.EndedAt)
 	}
 
+	mutation := insertMutation
+	if cmd.SyncedGW {
+		mutation = updateMutation
+	}
 	body, err := json.Marshal(map[string]any{
-		"query":     insertMutation,
+		"query":     mutation,
 		"variables": vars,
 	})
 	if err != nil {
@@ -264,12 +282,26 @@ func (c *Client) PushCommand(ctx context.Context, cmd *db.Command) error {
 	if len(gqlResp.Errors) > 0 {
 		return gqlResp.Errors[0].asError()
 	}
+	if cmd.SyncedGW {
+		var updateResult struct {
+			Update *struct {
+				AffectedRows int `json:"affected_rows"`
+			} `json:"update_oplogEntry"`
+		}
+		if err := json.Unmarshal(gqlResp.Data, &updateResult); err != nil {
+			return fmt.Errorf("ghostwriter: parse update response: %w", err)
+		}
+		if updateResult.Update == nil || updateResult.Update.AffectedRows != 1 {
+			affected := 0
+			if updateResult.Update != nil {
+				affected = updateResult.Update.AffectedRows
+			}
+			return fmt.Errorf("ghostwriter: update matched %d entries for command %q", affected, cmd.ShortID)
+		}
+	}
 
 	if c.logger != nil {
-		c.logger.Debug("ghostwriter: pushed command",
-			"short_id", cmd.ShortID,
-			"command", cmd.Command,
-		)
+		c.logger.Debug("ghostwriter: pushed command", "short_id", cmd.ShortID)
 	}
 	return nil
 }
@@ -332,6 +364,13 @@ mutation GrimoireInsertOplogEntry(
   $start_date:       timestamptz
   $end_date:         timestamptz
   $entry_identifier: String
+  $operator_name:    String
+  $tool:             String
+  $user_context:     String
+  $source_ip:        String
+  $dest_ip:          String
+  $description:      String
+  $comments:         String
 ) {
   insert_oplogEntry_one(object: {
     oplog:             $oplog_id
@@ -340,7 +379,59 @@ mutation GrimoireInsertOplogEntry(
     startDate:         $start_date
     endDate:           $end_date
     entryIdentifier:   $entry_identifier
+    operatorName:      $operator_name
+    tool:              $tool
+    userContext:       $user_context
+    sourceIp:          $source_ip
+    destIp:            $dest_ip
+    description:       $description
+    comments:          $comments
   }) {
     id
+  }
+}`
+
+// updateMutation refreshes the Grimoire-owned fields on an existing entry.
+// Oplog, entryIdentifier, and startDate form the integration-owned match. The
+// service token constrains the oplog; including the original millisecond start
+// time prevents one Grimoire instance from updating another instance's row if
+// their short identifiers happen to collide.
+const updateMutation = `
+mutation GrimoireUpdateOplogEntry(
+  $oplog_id:         bigint!
+  $command:          String!
+  $output:           String
+  $start_date:       timestamptz
+  $end_date:         timestamptz
+  $entry_identifier: String!
+  $operator_name:    String
+  $tool:             String
+  $user_context:     String
+  $source_ip:        String
+  $dest_ip:          String
+  $description:      String
+  $comments:         String
+) {
+  update_oplogEntry(
+    where: {
+      oplog: {_eq: $oplog_id}
+      entryIdentifier: {_eq: $entry_identifier}
+      startDate: {_eq: $start_date}
+    }
+    _set: {
+      command:      $command
+      output:       $output
+      startDate:    $start_date
+      endDate:      $end_date
+      operatorName: $operator_name
+      tool:         $tool
+      userContext:  $user_context
+      sourceIp:     $source_ip
+      destIp:       $dest_ip
+      description:  $description
+      comments:     $comments
+    }
+  ) {
+    affected_rows
   }
 }`

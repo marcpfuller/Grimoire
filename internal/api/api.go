@@ -451,11 +451,7 @@ func (s *Server) handleGetMetadata(w http.ResponseWriter, r *http.Request) {
 
 	meta, err := s.store.GetCommandMetadata(r.Context(), cmd.ID)
 	if errors.Is(err, db.ErrNotFound) {
-		meta = &db.CommandMetadata{
-			CommandID:   cmd.ID,
-			Tool:        toolFromCommand(cmd.Command),
-			Description: defaultDescription(cmd.ExitCode),
-		}
+		meta = db.DefaultCommandMetadata(cmd)
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load metadata")
 		return
@@ -508,11 +504,7 @@ func (s *Server) handlePatchMetadata(w http.ResponseWriter, r *http.Request) {
 
 	meta, err := s.store.GetCommandMetadata(r.Context(), cmd.ID)
 	if errors.Is(err, db.ErrNotFound) {
-		meta = &db.CommandMetadata{
-			CommandID:   cmd.ID,
-			Tool:        toolFromCommand(cmd.Command),
-			Description: defaultDescription(cmd.ExitCode),
-		}
+		meta = db.DefaultCommandMetadata(cmd)
 	} else if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load metadata")
 		return
@@ -818,30 +810,6 @@ func (s *Server) handleExportCast(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, castExportResponse{Success: true, Path: path})
 }
 
-// toolFromCommand extracts the first whitespace-delimited token from a shell
-// command string as the tool name. "nmap -sC -sV 10.0.0.5" → "nmap".
-func toolFromCommand(command string) string {
-	for _, tok := range strings.Fields(command) {
-		return tok
-	}
-	return ""
-}
-
-// defaultDescription derives the initial value of CommandMetadata.Description
-// when no metadata row has been saved yet, based on the command's exit
-// status. The operator can freely overwrite this default afterward via
-// PATCH .../metadata. exitCode is nil while the command is still running, in
-// which case no outcome is known yet and the description is left blank.
-func defaultDescription(exitCode *int) string {
-	if exitCode == nil {
-		return ""
-	}
-	if *exitCode == 0 {
-		return "Command Executed"
-	}
-	return "Command Failed"
-}
-
 // commandToResponse converts a db.Command to the API wire shape.
 // Duration is "-1" for in-flight commands (EndedAt == nil).
 func commandToResponse(c *db.Command) CommandResponse {
@@ -891,11 +859,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handleSync handles POST /api/sync.
-// It pushes a single unsynced command to Ghostwriter immediately, regardless
-// of the auto_sync setting. The request body must be JSON with a "short_id"
+// It pushes a single new or locally-updated command to Ghostwriter immediately,
+// regardless of the auto_sync setting. The request body must be JSON with a "short_id"
 // field. An optional "oplog_id" field overrides the command's stored oplog ID
-// for this push only — it is not persisted. Returns 404 if the command is not
-// found, 409 if already synced, 400 if no oplog ID is available.
+// for the initial push; that successful remote target is retained for future
+// updates without changing the pane's oplog. Returns 404 if the command is not
+// found, 409 if already current, 400 if no oplog ID is available.
 func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ShortID string `json:"short_id"`

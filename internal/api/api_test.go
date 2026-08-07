@@ -1568,7 +1568,7 @@ func TestHandleSync_oplog_override_pushes_with_override_id(t *testing.T) {
 	cmd := &db.Command{ID: 5, ShortID: "abc123", OplogID: 0, SyncedGW: false}
 
 	store.On("GetCommandByShortID", mock.Anything, "abc123").Return(cmd, nil).Once()
-	store.On("MarkCommandSynced", mock.Anything, int64(5)).Return(nil).Once()
+	store.On("MarkCommandSynced", mock.Anything, int64(5), 42, int64(0)).Return(nil).Once()
 
 	srv := newServer(t, store, 0)
 	srv.SetRuntime(api.RuntimeConfig{Syncer: newSyncerForAPI(t, store, pusher)})
