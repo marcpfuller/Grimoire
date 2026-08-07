@@ -23,6 +23,7 @@ export function SessionList({
 }: SessionListProps) {
   const [checkedIds, setCheckedIds] = useState<Set<string>>(new Set())
   const [exporting, setExporting] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     const availableIds = new Set(sessions.flatMap(session => session.commands.map(command => command.id)))
@@ -34,6 +35,7 @@ export function SessionList({
 
   const toggleCheck = (id: string, e: React.MouseEvent) => {
     e.stopPropagation()
+    if (deleting) return
     setCheckedIds(prev => {
       const next = new Set(prev)
       next.has(id) ? next.delete(id) : next.add(id)
@@ -42,7 +44,7 @@ export function SessionList({
   }
 
   const handleExport = () => {
-    if (checkedIds.size === 0 || exporting) return
+    if (checkedIds.size === 0 || exporting || deleting) return
     setExporting(true)
     API.exportCast([...checkedIds])
       .then(res => {
@@ -57,8 +59,65 @@ export function SessionList({
       .finally(() => setExporting(false))
   }
 
+  const handleDelete = async () => {
+    if (checkedIds.size === 0 || deleting || exporting) return
+
+    const ids = [...checkedIds]
+    const commandLabel = ids.length === 1 ? 'command' : 'commands'
+    if (!window.confirm(`Delete ${ids.length} selected ${commandLabel} from this device? This cannot be undone.`)) return
+
+    setDeleting(true)
+    try {
+      const results = await Promise.allSettled(ids.map(id => API.deleteCommand(id)))
+      const failedIds = ids.filter((_, index) => results[index].status === 'rejected')
+      const succeededIds = ids.filter((_, index) => results[index].status === 'fulfilled')
+
+      setCheckedIds(prev => {
+        const next = new Set(prev)
+        succeededIds.forEach(id => next.delete(id))
+        return next
+      })
+
+      if (failedIds.length === 0) {
+        addToast({
+          type: 'success',
+          title: ids.length === 1 ? 'Command deleted' : 'Commands deleted',
+          detail: `Deleted ${ids.length} ${commandLabel} from the local database.`,
+        })
+      } else {
+        addToast({
+          type: 'error',
+          title: succeededIds.length > 0 ? 'Some commands were not deleted' : 'Delete failed',
+          detail: `${failedIds.length} ${failedIds.length === 1 ? 'command remains' : 'commands remain'} selected.`,
+          shortIDs: failedIds,
+        })
+      }
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="session-list flex flex-col flex-1 min-h-0">
+      <div className="sidebar-section-header px-4 py-2 text-[11px] font-bold uppercase text-vscode-text-muted tracking-wider bg-vscode-sidebar flex items-center justify-between">
+        <span>SESSIONS</span>
+        <button
+          type="button"
+          aria-label="Delete selected commands"
+          title={checkedIds.size > 0 ? `Delete ${checkedIds.size} selected command${checkedIds.size > 1 ? 's' : ''}` : 'Select commands to delete'}
+          onClick={handleDelete}
+          disabled={checkedIds.size === 0 || deleting || exporting}
+          className={`-my-1 -mr-1 p-1 flex items-center justify-center rounded-sm transition-colors ${
+            checkedIds.size > 0
+              ? 'text-red-400 hover:text-red-300 hover:bg-vscode-hover'
+              : 'text-vscode-text-muted opacity-40 cursor-default'
+          }`}
+        >
+          <span className="material-symbols-outlined text-[16px]">
+            {deleting ? 'hourglass_empty' : 'delete'}
+          </span>
+        </button>
+      </div>
       <div className="session-list-scroll flex-1 overflow-y-auto">
       {sessions.map(session => (
         <div key={session.id} className="session-item flex flex-col">
@@ -87,11 +146,12 @@ export function SessionList({
                     <span
                       className={`shrink-0 mr-2 flex items-center justify-center w-[14px] h-[14px] ${isChecked ? '' : 'opacity-0 group-hover:opacity-100'}`}
                       onClick={e => toggleCheck(cmd.id, e)}
-                      title={isChecked ? 'Deselect' : 'Select for export'}
+                      title={isChecked ? 'Deselect command' : 'Select command'}
                     >
                       <input
                         type="checkbox"
                         checked={isChecked}
+                        disabled={deleting}
                         onChange={() => {/* handled by onClick above */}}
                         className="w-[13px] h-[13px] accent-vscode-accent cursor-pointer"
                       />
@@ -125,7 +185,7 @@ export function SessionList({
       <div className="session-list-export shrink-0 px-3 py-2 border-t border-vscode-border">
         <button
           onClick={handleExport}
-          disabled={checkedIds.size === 0 || exporting}
+          disabled={checkedIds.size === 0 || exporting || deleting}
           className={`w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-sm text-[12px] font-semibold transition-colors border ${
             checkedIds.size > 0
               ? 'bg-vscode-accent hover:bg-[#1177bb] text-white border-vscode-accent'

@@ -42,6 +42,7 @@ export interface ApiClient {
   fetchConfig: () => Promise<AppConfig>
   updateConfig: (config: AppConfig) => Promise<AppConfig>
   exportCast: (ids: string[]) => Promise<{ success: boolean; path: string }>
+  deleteCommand: (shortId: string) => Promise<void>
   fetchSessions: () => Promise<import('./generated').SessionResponse[]>
   fetchTags: () => Promise<import('./generated').TagResponse[]>
   fetchOutput: (commandId: string) => Promise<string>

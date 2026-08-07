@@ -38,6 +38,16 @@ export const RealAPI: ApiClient = {
       }
       return res.json() as Promise<{ success: boolean; path: string }>
     }),
+  deleteCommand: shortId =>
+    fetch(`/api/commands/${encodeURIComponent(shortId)}`, {
+      method: 'DELETE',
+      headers: authHeader(),
+    }).then(async res => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: res.statusText })) as { error?: string }
+        throw new Error(body.error ?? res.statusText)
+      }
+    }),
   fetchSessions: () =>
     fetch('/api/sessions', { headers: authHeader() }).then(res => res.json() as Promise<Session[]>),
   fetchTags: () =>

@@ -98,6 +98,23 @@ export const MockAPI: ApiClient = {
   fetchConfig: () => delay(100).then(() => MOCK_CONFIG),
   updateConfig: config => delay(300).then(() => config),
   exportCast: _ids => delay(300).then(() => ({ success: true, path: '/tmp/grimoire/casts/grimoire-export.cast' })),
+  deleteCommand: shortId =>
+    delay(300).then(() => {
+      for (let sessionIndex = 0; sessionIndex < MOCK_SESSIONS.length; sessionIndex++) {
+        const session = MOCK_SESSIONS[sessionIndex]
+        const commandIndex = session.commands.findIndex(command => command.id === shortId)
+        if (commandIndex === -1) continue
+
+        session.commands.splice(commandIndex, 1)
+        delete MOCK_METADATA[shortId]
+        for (let tagIndex = MOCK_TAGS.length - 1; tagIndex >= 0; tagIndex--) {
+          if (MOCK_TAGS[tagIndex].shortId === shortId) MOCK_TAGS.splice(tagIndex, 1)
+        }
+        if (session.commands.length === 0) MOCK_SESSIONS.splice(sessionIndex, 1)
+        return
+      }
+      throw new Error(`command not found: ${shortId}`)
+    }),
   fetchSessions: () => delay(100).then(() => MOCK_SESSIONS),
   fetchTags: () => delay(100).then(() => MOCK_TAGS),
   fetchOutput: _commandId => delay(100).then(() => MOCK_OUTPUT),

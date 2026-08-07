@@ -887,7 +887,12 @@ func TestHandleDelete(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := dbmocks.NewMockStore(t)
-			store.On(tt.storeCall, mock.Anything, tt.id).Return(tt.storeErr).Once()
+			if tt.storeCall == "DeleteCommandByShortID" {
+				store.On(tt.storeCall, mock.Anything, tt.id).
+					Return(&db.DeleteCommandResult{PaneID: "pane-1"}, tt.storeErr).Once()
+			} else {
+				store.On(tt.storeCall, mock.Anything, tt.id).Return(tt.storeErr).Once()
+			}
 
 			w := doRequest(t, newServer(t, store, 5), http.MethodDelete, tt.target, nil)
 
@@ -898,20 +903,28 @@ func TestHandleDelete(t *testing.T) {
 
 func TestHandleDelete_BroadcastsRefreshEvents(t *testing.T) {
 	tests := []struct {
-		name      string
-		target    string
-		storeCall string
-		id        string
-		wantType  string
+		name        string
+		target      string
+		storeCall   string
+		id          string
+		paneDeleted bool
+		wantType    string
+		wantPaneID  string
 	}{
 		{name: "command", target: "/api/commands/a1b2c3d", storeCall: "DeleteCommandByShortID", id: "a1b2c3d", wantType: "command_deleted"},
-		{name: "pane", target: "/api/panes/pane-1", storeCall: "DeletePane", id: "pane-1", wantType: "session_deleted"},
+		{name: "last_command", target: "/api/commands/a1b2c3d", storeCall: "DeleteCommandByShortID", id: "a1b2c3d", paneDeleted: true, wantType: "session_deleted", wantPaneID: "pane-1"},
+		{name: "pane", target: "/api/panes/pane-1", storeCall: "DeletePane", id: "pane-1", wantType: "session_deleted", wantPaneID: "pane-1"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			store := dbmocks.NewMockStore(t)
-			store.On(tt.storeCall, mock.Anything, tt.id).Return(nil).Once()
+			if tt.storeCall == "DeleteCommandByShortID" {
+				store.On(tt.storeCall, mock.Anything, tt.id).
+					Return(&db.DeleteCommandResult{PaneID: "pane-1", PaneDeleted: tt.paneDeleted}, nil).Once()
+			} else {
+				store.On(tt.storeCall, mock.Anything, tt.id).Return(nil).Once()
+			}
 			broker := events.New()
 			sub := broker.Subscribe()
 			defer broker.Unsubscribe(sub)
@@ -923,6 +936,11 @@ func TestHandleDelete_BroadcastsRefreshEvents(t *testing.T) {
 			select {
 			case event := <-sub:
 				assert.Equal(t, tt.wantType, event.Type)
+				if tt.wantPaneID != "" {
+					data, ok := event.Data.(map[string]any)
+					require.True(t, ok)
+					assert.Equal(t, tt.wantPaneID, data["pane_id"])
+				}
 			case <-time.After(time.Second):
 				t.Fatalf("expected %s event", tt.wantType)
 			}

@@ -822,21 +822,22 @@ func (s *sqliteStore) ListUnsynced(ctx context.Context) (cmds []*Command, err er
 	return
 }
 
-func (s *sqliteStore) DeleteCommandByShortID(ctx context.Context, shortID string) error {
+func (s *sqliteStore) DeleteCommandByShortID(ctx context.Context, shortID string) (*DeleteCommandResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("db: begin delete command tx: %w", err)
+		return nil, fmt.Errorf("db: begin delete command tx: %w", err)
 	}
 	defer tx.Rollback() //nolint:errcheck
 
 	var commandID int64
+	var paneID string
 	if err = tx.QueryRowContext(ctx,
-		`SELECT id FROM commands WHERE short_id = ?`, shortID,
-	).Scan(&commandID); err != nil {
+		`SELECT id, pane_id FROM commands WHERE short_id = ?`, shortID,
+	).Scan(&commandID, &paneID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
+			return nil, ErrNotFound
 		}
-		return fmt.Errorf("db: find command for deletion: %w", err)
+		return nil, fmt.Errorf("db: find command for deletion: %w", err)
 	}
 
 	deletes := []struct {
@@ -850,14 +851,38 @@ func (s *sqliteStore) DeleteCommandByShortID(ctx context.Context, shortID string
 	}
 	for _, deletion := range deletes {
 		if _, err = tx.ExecContext(ctx, deletion.query, commandID); err != nil {
-			return fmt.Errorf("db: delete command %s: %w", deletion.name, err)
+			return nil, fmt.Errorf("db: delete command %s: %w", deletion.name, err)
 		}
 	}
 
-	if err = tx.Commit(); err != nil {
-		return fmt.Errorf("db: commit delete command: %w", err)
+	// Removing the final command removes the now-empty session as part of the
+	// same transaction. The pending reservation must go first to satisfy its
+	// foreign key to panes; both statements are no-ops when another command
+	// still belongs to this pane.
+	if _, err = tx.ExecContext(ctx,
+		`DELETE FROM pending_commands
+		 WHERE pane_id = ? AND NOT EXISTS (SELECT 1 FROM commands WHERE pane_id = ?)`,
+		paneID, paneID,
+	); err != nil {
+		return nil, fmt.Errorf("db: delete empty pane reservation: %w", err)
 	}
-	return nil
+	paneResult, err := tx.ExecContext(ctx,
+		`DELETE FROM panes
+		 WHERE id = ? AND NOT EXISTS (SELECT 1 FROM commands WHERE pane_id = ?)`,
+		paneID, paneID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("db: delete empty pane: %w", err)
+	}
+	paneRows, err := paneResult.RowsAffected()
+	if err != nil {
+		return nil, fmt.Errorf("db: read empty pane deletion result: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("db: commit delete command: %w", err)
+	}
+	return &DeleteCommandResult{PaneID: paneID, PaneDeleted: paneRows > 0}, nil
 }
 
 func (s *sqliteStore) DeletePane(ctx context.Context, paneID string) error {
