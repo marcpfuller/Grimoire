@@ -381,7 +381,10 @@ func TestDeleteCommandByShortID(t *testing.T) {
 	kept, err := s.GetCommandByShortID(ctx, "keep001")
 	require.NoError(t, err)
 
-	require.NoError(t, s.DeleteCommandByShortID(ctx, "del0001"))
+	result, err := s.DeleteCommandByShortID(ctx, "del0001")
+	require.NoError(t, err)
+	assert.Equal(t, "pane-A", result.PaneID)
+	assert.False(t, result.PaneDeleted)
 
 	_, err = s.GetCommandByShortID(ctx, "del0001")
 	require.ErrorIs(t, err, db.ErrNotFound)
@@ -404,9 +407,32 @@ func TestDeleteCommandByShortID(t *testing.T) {
 	_, err = s.GetPane(ctx, "pane-A")
 	require.NoError(t, err)
 
-	require.ErrorIs(t, s.DeleteCommandByShortID(ctx, `' OR 1=1 --`), db.ErrNotFound)
+	_, err = s.DeleteCommandByShortID(ctx, `' OR 1=1 --`)
+	require.ErrorIs(t, err, db.ErrNotFound)
 	_, err = s.GetCommandByShortID(ctx, "keep001")
 	require.NoError(t, err, "SQL metacharacters must be treated as a literal short ID")
+}
+
+func TestDeleteCommandByShortIDDeletesEmptyPane(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, s.CreatePane(ctx, "pane-last-command", 0, "", 1000, 220, 50))
+	require.NoError(t, s.ReserveShortID(ctx, "pane-last-command", "last001"))
+	cmd := &db.Command{PaneID: "pane-last-command", Command: "whoami", StartedAt: 1000}
+	require.NoError(t, s.CreateCommand(ctx, cmd))
+	require.NoError(t, s.ReserveShortID(ctx, "pane-last-command", "pending"))
+
+	result, err := s.DeleteCommandByShortID(ctx, "last001")
+	require.NoError(t, err)
+	assert.Equal(t, "pane-last-command", result.PaneID)
+	assert.True(t, result.PaneDeleted)
+
+	_, err = s.GetPane(ctx, "pane-last-command")
+	require.ErrorIs(t, err, db.ErrNotFound)
+	pending, err := s.ShortIDExists(ctx, "pending")
+	require.NoError(t, err)
+	assert.False(t, pending, "deleting an empty session must release its pending reservation")
 }
 
 func TestDeletePane(t *testing.T) {
@@ -495,7 +521,9 @@ func TestDeletedCommandIDsAreNotReused(t *testing.T) {
 		require.NoError(t, s.CreatePane(ctx, "pane-command-delete", 0, "", 1000, 220, 50))
 
 		deleted := createCommand(t, s, "pane-command-delete", "old0001")
-		require.NoError(t, s.DeleteCommandByShortID(ctx, deleted.ShortID))
+		_, err := s.DeleteCommandByShortID(ctx, deleted.ShortID)
+		require.NoError(t, err)
+		require.NoError(t, s.CreatePane(ctx, "pane-command-delete", 0, "", 2000, 220, 50))
 		created := createCommand(t, s, "pane-command-delete", "new0001")
 
 		assert.Greater(t, created.ID, deleted.ID, "a stale PTY or sync reference must never resolve to a new command")
@@ -1159,7 +1187,9 @@ func TestMigrationV11CommandIDsAutoincrement(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "operator", metadata.Operator)
 
-	require.NoError(t, s.DeleteCommandByShortID(context.Background(), legacy.ShortID))
+	_, err = s.DeleteCommandByShortID(context.Background(), legacy.ShortID)
+	require.NoError(t, err)
+	require.NoError(t, s.CreatePane(context.Background(), "legacy-pane", 0, "", 2000, 220, 50))
 	require.NoError(t, s.ReserveShortID(context.Background(), "legacy-pane", "after11"))
 	created := &db.Command{PaneID: "legacy-pane", Command: "hostname", StartedAt: 3000}
 	require.NoError(t, s.CreateCommand(context.Background(), created))

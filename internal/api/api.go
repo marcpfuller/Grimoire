@@ -392,9 +392,11 @@ func (s *Server) handleDeregister(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteCommand deletes a command and its output, tags, and metadata.
+// Deleting a pane's final command also removes that empty pane.
 func (s *Server) handleDeleteCommand(w http.ResponseWriter, r *http.Request) {
 	shortID := r.PathValue("id")
-	if err := s.store.DeleteCommandByShortID(r.Context(), shortID); err != nil {
+	result, err := s.store.DeleteCommandByShortID(r.Context(), shortID)
+	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "command not found")
 			return
@@ -405,6 +407,13 @@ func (s *Server) handleDeleteCommand(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+	if result.PaneDeleted {
+		s.broadcast(events.Event{
+			Type: "session_deleted",
+			Data: map[string]any{"pane_id": result.PaneID},
+		})
+		return
+	}
 	s.broadcast(events.Event{
 		Type: "command_deleted",
 		Data: map[string]any{"short_id": shortID},

@@ -50,6 +50,13 @@ type Command struct {
 	SyncPending  bool
 }
 
+// DeleteCommandResult describes the owning pane state after a command and its
+// associated local records have been deleted.
+type DeleteCommandResult struct {
+	PaneID      string
+	PaneDeleted bool
+}
+
 // OutputChunk is one streamed PTY read captured during a command's execution.
 type OutputChunk struct {
 	ID        int64
@@ -139,9 +146,10 @@ type Store interface {
 	// whose metadata revision is newer than the last successful push.
 	ListUnsynced(ctx context.Context) ([]*Command, error)
 	// DeleteCommandByShortID atomically deletes a command and all of its
-	// output chunks, tags, and metadata. Returns ErrNotFound when shortID does
-	// not identify a command.
-	DeleteCommandByShortID(ctx context.Context, shortID string) error
+	// output chunks, tags, and metadata. When it was the pane's final command,
+	// the empty pane and pending reservation are deleted as well. Returns
+	// ErrNotFound when shortID does not identify a command.
+	DeleteCommandByShortID(ctx context.Context, shortID string) (*DeleteCommandResult, error)
 	FinalizeCommand(ctx context.Context, shortID string, endedAt int64, exitCode int) error
 	// MarkCommandSynced records the successful remote oplog and syncRevision.
 	// A stale completion moves the stored revision backward so the latest local
