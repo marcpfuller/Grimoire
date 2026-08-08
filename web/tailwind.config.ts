@@ -31,6 +31,7 @@ export default {
       },
       fontFamily: {
         code: ['Cascadia Code', 'JetBrains Mono', 'monospace'],
+        display: ['Cinzel Decorative', 'Georgia', 'serif'],
         ui: ['Inter', 'sans-serif'],
       },
     },

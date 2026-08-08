@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <title>Grimoire spellbook</title>
+  <defs>
+    <linearGradient id="cover" x1="123" y1="84" x2="372" y2="354" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#4A637A"/>
+      <stop offset="1" stop-color="#263C52"/>
+    </linearGradient>
+    <linearGradient id="spine" x1="78" y1="90" x2="126" y2="405" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#526B80"/>
+      <stop offset="1" stop-color="#263A4E"/>
+    </linearGradient>
+    <linearGradient id="brandBlue" x1="180" y1="135" x2="356" y2="345" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#55B6F2"/>
+      <stop offset="1" stop-color="#007ACC"/>
+    </linearGradient>
+    <linearGradient id="paper" x1="130" y1="367" x2="347" y2="429" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFDF8"/>
+      <stop offset="1" stop-color="#D9DEDD"/>
+    </linearGradient>
+    <linearGradient id="feather" x1="281" y1="284" x2="425" y2="82" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F0FAF8"/>
+      <stop offset="1" stop-color="#A8CED0"/>
+    </linearGradient>
+    <linearGradient id="featherHighlight" x1="290" y1="268" x2="412" y2="99" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#DDF4F0"/>
+      <stop offset="1" stop-color="#F8FFFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Floating magic sparks -->
+  <g fill="url(#brandBlue)">
+    <path d="M278 30c3 15 9 21 24 24-15 3-21 9-24 24-3-15-9-21-24-24 15-3 21-9 24-24Z"/>
+    <path d="M323 45c4 21 12 29 33 33-21 4-29 12-33 33-4-21-12-29-33-33 21-4 29-12 33-33Z"/>
+    <path d="M70 149c4 19 11 26 30 30-19 4-26 11-30 30-4-19-11-26-30-30 19-4 26-11 30-30Z"/>
+    <path d="M432 278c4 20 12 28 32 32-20 4-28 12-32 32-4-20-12-28-32-32 20-4 28-12 32-32Z"/>
+    <path d="M173 445c3 16 10 23 26 26-16 3-23 10-26 26-3-16-10-23-26-26 16-3 23-10 26-26Z"/>
+    <path d="M218 444c4 20 11 27 31 31-20 4-27 11-31 31-4-20-11-27-31-31 20-4 27-11 31-31Z"/>
+    <circle cx="59" cy="132" r="6"/>
+    <circle cx="56" cy="222" r="6"/>
+    <circle cx="438" cy="257" r="6"/>
+    <circle cx="444" cy="350" r="6"/>
+  </g>
+
+  <!-- Book silhouette and rounded spine -->
+  <path
+    d="M117 75h253c18 0 29 13 29 31v244c0 11-5 20-15 25-9 18-10 36-2 52h13c9 0 15 7 15 15s-6 14-15 14H129c-42 0-70-28-70-68V131c0-33 24-56 58-56Z"
+    fill="#22364A"
+  />
+  <path
+    d="M119 88h34v274h-23c-29 0-51 22-51 52V132c0-26 16-44 40-44Z"
+    fill="url(#spine)"
+  />
+  <path d="M81 147c19-19 37-25 72-31v18c-32 6-53 16-72 35v-22Z" fill="url(#brandBlue)"/>
+  <path d="M81 174c20-18 42-27 72-33v13c-29 7-53 18-72 36v-16Z" fill="#179BE8"/>
+  <path d="M81 306c20-16 39-23 72-28v18c-31 6-53 15-72 32v-22Z" fill="url(#brandBlue)"/>
+  <path d="M81 333c20-16 40-23 72-29v13c-30 7-51 16-72 33v-17Z" fill="#179BE8"/>
+
+  <!-- Front cover -->
+  <path d="M145 86h236v278H145V86Z" fill="url(#cover)" stroke="#182A3C" stroke-width="13"/>
+  <path d="M365 322c0 23-12 36-35 36h45v-74c-4 21-10 31-10 38Z" fill="url(#brandBlue)"/>
+
+  <!-- Cover runes -->
+  <g stroke="url(#brandBlue)" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m202 168 55 55m-1-55-52 57c-18 20-10 47 17 57" stroke-width="14"/>
+    <path d="M256 171v-17" stroke-width="14"/>
+    <path d="m326 293 25 25-25 28-25-25 25-28Z" stroke-width="13"/>
+  </g>
+  <g fill="url(#brandBlue)">
+    <circle cx="256" cy="139" r="8"/>
+    <circle cx="267" cy="317" r="7"/>
+    <path d="M187 122c3 17 10 24 27 27-17 3-24 10-27 27-3-17-10-24-27-27 17-3 24-10 27-27Z"/>
+    <path d="M191 266c3 15 9 21 24 24-15 3-21 9-24 24-3-15-9-21-24-24 15-3 21-9 24-24Z"/>
+  </g>
+
+  <!-- Page block -->
+  <path
+    d="M133 359h249c-11 21-12 47-1 72H131c-27 0-45-14-45-36s19-36 47-36Z"
+    fill="url(#paper)"
+    stroke="#22364A"
+    stroke-width="13"
+    stroke-linejoin="round"
+  />
+  <path d="M126 383h243" stroke="#263A4E" stroke-width="11" stroke-linecap="round"/>
+  <path d="M191 411h184" stroke="#263A4E" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- Quill shaft behind the feather -->
+  <path d="M214 348 392 105" stroke="#1A2D40" stroke-width="13" stroke-linecap="round"/>
+
+  <!-- Silver quill, matching the original notched silhouette -->
+  <path
+    d="M244 302c-2-44 13-88 43-128l20 26 12-43c32-38 70-66 107-75 9-2 17 6 15 15-4 20-11 39-22 57l-27 18 29 8c-27 42-66 81-111 107l-37 3-29 12Z"
+    fill="url(#feather)"
+    stroke="#1A2D40"
+    stroke-width="14"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M262 279c31-47 77-104 143-165-40 49-77 102-105 153-15 10-27 15-38 12Z"
+    fill="url(#featherHighlight)"
+  />
+  <path d="M225 342c51-70 107-142 177-225" stroke="#1A2D40" stroke-width="10" stroke-linecap="round"/>
+</svg>
