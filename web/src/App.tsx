@@ -28,6 +28,7 @@ export default function App() {
   const allCommands = useMemo(() => sessions.flatMap(s => s.commands), [sessions])
   const paneNameById = useMemo(() => buildPaneNameMap(sessions), [sessions])
   const { config, updateConfig } = useConfigData()
+  const ghostwriterURL = typeof config?.ghostwriter?.url === 'string' ? config.ghostwriter.url : ''
   const { toasts, removeToast, addToast } = useToasts()
 
   const toggleSession = (id: string) =>
@@ -69,7 +70,12 @@ export default function App() {
         {activeView === 'settings' ? (
           <SettingsEditor selectedSetting={selectedSetting} updateConfig={updateConfig} />
         ) : (
-          <CommandDetail command={selectedCommand} session={selectedSession} addToast={addToast} />
+          <CommandDetail
+            command={selectedCommand}
+            session={selectedSession}
+            ghostwriterURL={ghostwriterURL}
+            addToast={addToast}
+          />
         )}
       </div>
       <StatusBar health={health} gwHealth={gwHealth} />

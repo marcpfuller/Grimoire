@@ -29,6 +29,7 @@ function makeCommand(id: string, command: string): Session['commands'][number] {
     duration: '1s',
     exitCode: 0,
     paneId: 'pane-1',
+    oplogId: 42,
     syncedGW: false,
   }
 }
@@ -49,6 +50,7 @@ describe('SessionList', () => {
       duration: '1s',
       exitCode: 0,
       paneId: 'pane-1',
+      oplogId: 42,
       syncedGW: false,
     }
     const props = {

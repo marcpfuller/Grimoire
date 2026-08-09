@@ -46,10 +46,44 @@ body {
   to { opacity: 0; }
 }
 
+@keyframes shyGhostFury {
+  0% { transform: translateX(0) rotate(0); }
+  2% { transform: translateX(-6px) rotate(-12deg); }
+  4% { transform: translateX(7px) rotate(13deg); }
+  6% { transform: translateX(-8px) rotate(-14deg); }
+  8% { transform: translateX(8px) rotate(14deg); }
+  10% { transform: translateX(-6px) rotate(-11deg); }
+  12% { transform: translateX(6px) rotate(11deg); }
+  14% {
+    transform: translateX(0) rotate(0);
+    animation-timing-function: cubic-bezier(0.7, 0, 1, 0.4);
+  }
+  30% {
+    transform: translateX(calc(100vw + 80px)) rotate(8deg);
+    animation-timing-function: ease-out;
+  }
+  43% {
+    transform: translateX(calc(100vw + 80px)) rotate(0);
+    animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  100% { transform: translateX(0) rotate(0); }
+}
+
 .toast-enter {
   animation: slideInRight 200ms ease-out forwards;
 }
 
 .toast-exit {
   animation: fadeOut 150ms ease-out forwards;
+}
+
+.shy-ghost-fury {
+  animation: shyGhostFury 3.8s both;
+  will-change: transform;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shy-ghost-fury {
+    animation: none;
+  }
 }
