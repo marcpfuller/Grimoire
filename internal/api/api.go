@@ -15,9 +15,11 @@
 //	PATCH /api/commands/{id}/metadata   update operator annotations for a command
 //	DELETE /api/panes/{id}              delete a pane and all associated records
 //	GET  /api/oplogs                    list oplogs visible to configured Ghostwriter tokens
+//	GET  /api/ghostwriter/health        check Ghostwriter infrastructure and authenticated access
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,6 +54,10 @@ type RuntimeConfig struct {
 	// Oplogs returns the aggregated list of oplogs discovered across all Init'd
 	// Ghostwriter tokens. May be nil if Ghostwriter is not configured.
 	Oplogs func() []ghostwriter.OplogEntry
+
+	// GhostwriterHealth checks both Ghostwriter infrastructure and authenticated
+	// GraphQL access. May be nil if Ghostwriter is not configured.
+	GhostwriterHealth func(context.Context) error
 
 	// Shutdown, when non-nil, is called by POST /api/shutdown to trigger a
 	// graceful daemon shutdown. Typically wired to the context cancel func.
@@ -95,6 +101,7 @@ func (s *Server) broadcast(e events.Event) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/ghostwriter/health", s.handleGhostwriterHealth)
 	mux.HandleFunc("GET /api/sessions", s.handleGetSessions)
 	mux.HandleFunc("GET /api/tags", s.handleGetTags)
 	mux.HandleFunc("GET /api/next-id", s.handleNextID)
@@ -865,6 +872,26 @@ func (s *Server) logInfo(msg string, args ...any) {
 // Used by `grim shell` to detect daemon outages during an active session.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleGhostwriterHealth reports whether the daemon can reach Ghostwriter and
+// authenticate at least one configured service token. Detailed upstream errors
+// remain server-side so responses cannot disclose tokens or remote internals.
+func (s *Server) handleGhostwriterHealth(w http.ResponseWriter, r *http.Request) {
+	const timeout = 5 * time.Second
+	unreachable := GhostwriterHealthResponse{Status: "Unreachable"}
+	if s.runtime.GhostwriterHealth == nil {
+		writeJSON(w, http.StatusServiceUnavailable, unreachable)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	if err := s.runtime.GhostwriterHealth(ctx); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, unreachable)
+		return
+	}
+	writeJSON(w, http.StatusOK, GhostwriterHealthResponse{Status: "Connected"})
 }
 
 // handleSync handles POST /api/sync.

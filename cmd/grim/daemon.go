@@ -161,9 +161,10 @@ func runDaemonStart(_ *cobra.Command, _ []string) error {
 
 	// Wire live-reload tunables into the API server.
 	srv.SetRuntime(api.RuntimeConfig{
-		Syncer:   syncer,
-		LevelVar: levelVar,
-		Oplogs:   multiClient.Oplogs,
+		Syncer:            syncer,
+		LevelVar:          levelVar,
+		Oplogs:            multiClient.Oplogs,
+		GhostwriterHealth: multiClient.CheckHealth,
 		Shutdown: func() {
 			cancel()
 			select {

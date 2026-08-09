@@ -37,12 +37,7 @@ var ansiRe = regexp.MustCompile(
 		`)`,
 )
 
-// GraphqlEndpoint returns the /v1/graphql endpoint for the given raw URL.
-// It strips any path, query, or fragment so that a URL like
-// "https://gw.example.com/users/admin/" correctly becomes
-// "https://gw.example.com/v1/graphql" rather than appending to a stale path.
-// Exported for testing.
-func GraphqlEndpoint(rawURL string) (string, error) {
+func serviceEndpoint(rawURL, path string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return "", fmt.Errorf("ghostwriter: invalid URL %q: %w", rawURL, err)
@@ -50,7 +45,19 @@ func GraphqlEndpoint(rawURL string) (string, error) {
 	if u.Scheme == "" || u.Host == "" {
 		return "", fmt.Errorf("ghostwriter: URL %q is missing scheme or host", rawURL)
 	}
-	return u.Scheme + "://" + u.Host + "/v1/graphql", nil
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", fmt.Errorf("ghostwriter: URL %q must use http or https", rawURL)
+	}
+	return u.Scheme + "://" + u.Host + path, nil
+}
+
+// GraphqlEndpoint returns the /v1/graphql endpoint for the given raw URL.
+// It strips any path, query, or fragment so that a URL like
+// "https://gw.example.com/users/admin/" correctly becomes
+// "https://gw.example.com/v1/graphql" rather than appending to a stale path.
+// Exported for testing.
+func GraphqlEndpoint(rawURL string) (string, error) {
+	return serviceEndpoint(rawURL, "/v1/graphql")
 }
 
 // StripANSI removes all ANSI escape sequences from s, returning clean text

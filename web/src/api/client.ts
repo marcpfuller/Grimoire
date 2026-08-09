@@ -1,4 +1,4 @@
-import type { ApiClient, DaemonHealth, AppConfig, Session, Tag } from './types'
+import type { ApiClient, DaemonHealth, GwHealth, AppConfig, Session, Tag } from './types'
 import type { MetadataResponse, MetadataUpdateRequest } from './generated'
 
 /** Returns the bearer token injected by the daemon into index.html, or an
@@ -16,8 +16,16 @@ function authHeader(): Record<string, string> {
 }
 
 export const RealAPI: ApiClient = {
-  fetchHealth: () =>
-    fetch('/api/health', { headers: authHeader() }).then(res => res.json() as Promise<DaemonHealth>),
+  fetchHealth: async () => {
+    const res = await fetch('/api/health', { headers: authHeader() })
+    if (!res.ok) throw new Error(`health check failed: ${res.status}`)
+    return { status: 'Connected', errors: 0, warnings: 0, version: 'unknown' } satisfies DaemonHealth
+  },
+  fetchGhostwriterHealth: async () => {
+    const res = await fetch('/api/ghostwriter/health', { headers: authHeader() })
+    if (!res.ok) return { status: 'Unreachable' } satisfies GwHealth
+    return res.json() as Promise<GwHealth>
+  },
   fetchConfig: () =>
     fetch('/api/config', { headers: authHeader() }).then(res => res.json() as Promise<AppConfig>),
   updateConfig: config =>

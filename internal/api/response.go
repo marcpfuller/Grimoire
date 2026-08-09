@@ -41,6 +41,11 @@ type HealthResponse struct {
 	Version  string `json:"version"`
 }
 
+// GhostwriterHealthResponse is returned by GET /api/ghostwriter/health.
+type GhostwriterHealthResponse struct {
+	Status string `json:"status"`
+}
+
 // ConfigGroup is a flat key→value map for one config section.
 // Values can be string, number, or boolean.
 //
