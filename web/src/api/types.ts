@@ -5,6 +5,7 @@ export type {
   SessionResponse as Session,
   TagResponse as Tag,
   HealthResponse as DaemonHealth,
+  GhostwriterHealthResponse as GwHealth,
   MetadataResponse as CommandMetadata,
   MetadataUpdateRequest,
 } from './generated'
@@ -17,10 +18,6 @@ export type ConfigValue = string | number | boolean | string[]
 
 export interface AppConfig {
   [group: string]: Record<string, ConfigValue>
-}
-
-export interface GwHealth {
-  status: string
 }
 
 export interface Toast {
@@ -39,6 +36,7 @@ export interface SelectedSetting {
 
 export interface ApiClient {
   fetchHealth: () => Promise<import('./generated').HealthResponse>
+  fetchGhostwriterHealth: () => Promise<import('./generated').GhostwriterHealthResponse>
   fetchConfig: () => Promise<AppConfig>
   updateConfig: (config: AppConfig) => Promise<AppConfig>
   exportCast: (ids: string[]) => Promise<{ success: boolean; path: string }>

@@ -559,6 +559,7 @@ func TestGraphqlEndpoint(t *testing.T) {
 		{"no scheme", "localhost:8000", "", true},
 		{"empty", "", "", true},
 		{"invalid url", "://bad", "", true},
+		{"unsupported scheme", "ftp://gw.example.com", "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -571,6 +572,82 @@ func TestGraphqlEndpoint(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
+}
+
+func TestMultiClientCheckHealth_VerifiesStatusAndAuthenticatedGraphQL(t *testing.T) {
+	var statusMethod, statusAuth, graphqlMethod, graphqlAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/status/simple/":
+			statusMethod = r.Method
+			statusAuth = r.Header.Get("Authorization")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+		case "/v1/graphql":
+			graphqlMethod = r.Method
+			graphqlAuth = r.Header.Get("Authorization")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(discoverResponse))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, srv.URL+"/users/admin/", []string{testToken}, srv.Client(), nil)
+	require.NoError(t, mc.CheckHealth(context.Background()))
+
+	assert.Equal(t, http.MethodGet, statusMethod)
+	assert.Empty(t, statusAuth, "the service token must not be sent to the unauthenticated status endpoint")
+	assert.Equal(t, http.MethodPost, graphqlMethod)
+	assert.Equal(t, "Bearer "+testToken, graphqlAuth)
+}
+
+func TestMultiClientCheckHealth_RequiresHealthyStatusBeforeGraphQL(t *testing.T) {
+	graphqlCalled := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/graphql" {
+			graphqlCalled = true
+		}
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{testToken}, srv.Client(), nil)
+	require.Error(t, mc.CheckHealth(context.Background()))
+	assert.False(t, graphqlCalled)
+}
+
+func TestMultiClientCheckHealth_AcceptsPartialTokenSuccessWithoutLeakingTokens(t *testing.T) {
+	const badToken = "gwst_sensitive_bad_token"   //nolint:gosec // test credential only
+	const goodToken = "gwst_sensitive_good_token" //nolint:gosec // test credential only
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status/simple/" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("OK"))
+			return
+		}
+		if r.Header.Get("Authorization") == "Bearer "+badToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(discoverResponse))
+	}))
+	t.Cleanup(srv.Close)
+
+	ms := dbmocks.NewMockStore(t)
+	mc := ghostwriter.NewMultiClient(ms, srv.URL, []string{badToken, goodToken}, srv.Client(), nil)
+	require.NoError(t, mc.CheckHealth(context.Background()))
+
+	allBad := ghostwriter.NewMultiClient(ms, srv.URL, []string{badToken}, srv.Client(), nil)
+	err := allBad.CheckHealth(context.Background())
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), badToken)
 }
 
 // ---- helpers ----

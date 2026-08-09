@@ -3,6 +3,7 @@ package ghostwriter
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -112,4 +113,42 @@ func (m *MultiClient) PushCommand(ctx context.Context, cmd *db.Command) error {
 // Returns nil if Init has not been called.
 func (m *MultiClient) Oplogs() []OplogEntry {
 	return m.allOplogs
+}
+
+// CheckHealth verifies Ghostwriter's database/cache status and confirms that at
+// least one configured service token can access an oplog through Hasura GraphQL.
+// Tokens are sent only to the normalized /v1/graphql endpoint.
+func (m *MultiClient) CheckHealth(ctx context.Context) error {
+	if m.url == "" || len(m.tokens) == 0 {
+		return fmt.Errorf("ghostwriter: URL and at least one token must be configured")
+	}
+
+	statusEndpoint, err := serviceEndpoint(m.url, "/status/simple/")
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusEndpoint, nil)
+	if err != nil {
+		return fmt.Errorf("ghostwriter: build status request: %w", err)
+	}
+	resp, err := m.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("ghostwriter: status request: %w", err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("ghostwriter: status returned HTTP %d", resp.StatusCode)
+	}
+
+	var lastErr error
+	for _, token := range m.tokens {
+		client := NewWithHTTP(m.store, m.url, token, m.http, nil)
+		err := client.Init(ctx)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+	}
+	return fmt.Errorf("ghostwriter: no configured token passed the authenticated health check: %w", lastErr)
 }

@@ -95,6 +95,7 @@ const DEFAULT_METADATA: MetadataResponse = {
 export const MockAPI: ApiClient = {
   fetchHealth: () =>
     delay(100).then(() => ({ status: 'Connected', errors: 0, warnings: 0, version: 'v0.1.0-dev' } satisfies DaemonHealth)),
+  fetchGhostwriterHealth: () => delay(100).then(() => ({ status: 'Connected' })),
   fetchConfig: () => delay(100).then(() => MOCK_CONFIG),
   updateConfig: config => delay(300).then(() => config),
   exportCast: _ids => delay(300).then(() => ({ success: true, path: '/tmp/grimoire/casts/grimoire-export.cast' })),

@@ -867,6 +867,63 @@ func TestHandleHealth(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 }
 
+func TestHandleGhostwriterHealth(t *testing.T) {
+	tests := []struct {
+		name          string
+		check         func(context.Context) error
+		wantStatus    int
+		wantGWStatus  string
+		forbiddenBody string
+	}{
+		{
+			name:         "not configured",
+			wantStatus:   http.StatusServiceUnavailable,
+			wantGWStatus: "Unreachable",
+		},
+		{
+			name: "connected",
+			check: func(ctx context.Context) error {
+				if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+					return errors.New("missing health-check deadline")
+				}
+				return nil
+			},
+			wantStatus:   http.StatusOK,
+			wantGWStatus: "Connected",
+		},
+		{
+			name: "upstream failure is generic",
+			check: func(context.Context) error {
+				return errors.New("sensitive upstream response")
+			},
+			wantStatus:    http.StatusServiceUnavailable,
+			wantGWStatus:  "Unreachable",
+			forbiddenBody: "sensitive upstream response",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := dbmocks.NewMockStore(t)
+			srv := newServer(t, store, 5)
+			srv.SetRuntime(api.RuntimeConfig{GhostwriterHealth: tt.check})
+
+			w := doRequest(t, srv, http.MethodGet, "/api/ghostwriter/health", nil)
+			require.Equal(t, tt.wantStatus, w.Code)
+			assert.Equal(t, "application/json", w.Header().Get("Content-Type"))
+			body := w.Body.Bytes()
+			var response struct {
+				Status string `json:"status"`
+			}
+			require.NoError(t, json.Unmarshal(body, &response))
+			assert.Equal(t, tt.wantGWStatus, response.Status)
+			if tt.forbiddenBody != "" {
+				assert.NotContains(t, string(body), tt.forbiddenBody)
+			}
+		})
+	}
+}
+
 func TestHandleDelete(t *testing.T) {
 	tests := []struct {
 		name       string
