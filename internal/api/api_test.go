@@ -1095,6 +1095,22 @@ func TestHandleGetSessions(t *testing.T) {
 			},
 		},
 		{
+			name: "command_includes_effective_oplog_id",
+			setupStore: func(m *dbmocks.MockStore) {
+				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{{ID: "pane1"}}, nil)
+				m.EXPECT().ListCommandsByPane(mock.Anything, "pane1").Return([]*db.Command{
+					{ID: 1, ShortID: "abc0001", PaneID: "pane1", Command: "nmap", OplogID: 42, StartedAt: 1000},
+				}, nil)
+			},
+			wantStatus: http.StatusOK,
+			check: func(t *testing.T, w *httptest.ResponseRecorder) {
+				var sessions []map[string]any
+				require.NoError(t, json.NewDecoder(w.Body).Decode(&sessions))
+				cmds := sessions[0]["commands"].([]any)
+				assert.InDelta(t, 42, cmds[0].(map[string]any)["oplogId"], 0)
+			},
+		},
+		{
 			name: "session_name_uses_pane_name_not_id",
 			setupStore: func(m *dbmocks.MockStore) {
 				m.EXPECT().ListPanes(mock.Anything).Return([]*db.Pane{{ID: "pane-abc123", Name: "quiet-star-c123"}}, nil)

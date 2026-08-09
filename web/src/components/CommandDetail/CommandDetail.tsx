@@ -7,10 +7,11 @@ import { MetadataEditor } from './MetadataEditor'
 export interface CommandDetailProps {
   command: Command | null
   session: Session | null
+  ghostwriterURL: string
   addToast: (toast: Omit<Toast, 'id'>) => void
 }
 
-export function CommandDetail({ command, session, addToast }: CommandDetailProps) {
+export function CommandDetail({ command, session, ghostwriterURL, addToast }: CommandDetailProps) {
   const outputState = useCommandOutput(command?.id)
 
   if (!command) {
@@ -37,7 +38,7 @@ export function CommandDetail({ command, session, addToast }: CommandDetailProps
       {/* Content */}
       <div className="command-detail-body flex-1 overflow-y-auto p-4 md:p-6 flex flex-col gap-6">
         <div className="flex flex-col gap-4 border-b border-vscode-border pb-4">
-          <CommandHeader command={command} session={session} onCopy={handleCopy} />
+          <CommandHeader command={command} session={session} ghostwriterURL={ghostwriterURL} onCopy={handleCopy} />
         </div>
         <TerminalOutput outputState={outputState} />
         <MetadataEditor commandId={command.id} addToast={addToast} />
