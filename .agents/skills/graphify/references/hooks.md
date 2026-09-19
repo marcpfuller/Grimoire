@@ -1,10 +1,11 @@
-# graphify reference: commit hook and native CLAUDE.md integration
+# graphify reference: Git hooks and native CLAUDE.md integration
 
-Load this when the user asked to install the post-commit hook or wire graphify into a project's CLAUDE.md.
+Load this when the user asked to install Git hooks or wire graphify into a project's CLAUDE.md.
 
-## For git commit hook
+## For Git hooks
 
-Install a post-commit hook that auto-rebuilds the graph after every commit. No background process needed - triggers once per commit, works with any editor.
+Install post-commit and post-checkout hooks that auto-rebuild the graph after
+commits and primary-checkout branch switches. Rebuilds run detached with no LLM.
 
 ```bash
 graphify hook install    # install
@@ -12,9 +13,15 @@ graphify hook uninstall  # remove
 graphify hook status     # check
 ```
 
-After every `git commit`, the hook detects which code files changed (via `git diff HEAD~1`), re-runs AST extraction on those files, and rebuilds `graph.json` and `GRAPH_REPORT.md`. Doc/image changes are ignored by the hook - run `/graphify --update` manually for those.
+After every `git commit`, the hook detects which code files changed (via `git diff HEAD~1`), re-runs AST extraction on those files, and rebuilds `graph.json` and `GRAPH_REPORT.md`. A branch switch triggers a full code rebuild. Doc/image changes are ignored by the hook - run `/graphify --update` manually for those.
 
 If a post-commit hook already exists, graphify appends to it rather than replacing it.
+
+Graphify deliberately skips both hooks in linked Git worktrees. Conductor uses
+linked worktrees, so keep queries fresh there with `query-compact.sh`, which runs
+`ensure-code-graph.sh` immediately before traversal. Also note that hook installation
+registers a merge driver and may edit tracked `.gitattributes`; inspect that change
+when the graph is intended to remain local-only.
 
 ---
 

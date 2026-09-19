@@ -14,7 +14,7 @@ all: build
 build: build-frontend
 	go build -o $(BUILD_DIR)/$(BINARY_NAME) $(CMD_PATH)
 
-build-frontend:
+build-frontend: typegen
 	cd web && npm run build
 
 build-linux: build-frontend

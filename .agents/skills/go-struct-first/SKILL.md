@@ -15,10 +15,13 @@ Prefer authoritative typed state over loosely typed containers.
    value, serialized blob, or query parameter.
 3. Confirm which source is authoritative. A typed field is not automatically safe
    if it was populated from the same untrusted value.
-4. If no typed source exists, check for an existing package function before adding
-   a helper.
-5. Add a narrowly typed API when the same loose access recurs or controls a
-   security-sensitive decision.
+4. Search for existing package functions that provide the value or perform the
+   same lookup, and inspect their callers before proposing a helper.
+5. Reuse or adapt an existing function when it already provides the required
+   data. A broader result or less convenient shape alone does not justify a
+   parallel helper.
+6. Add a narrowly typed API only when the existing path cannot be reused safely
+   or correctly. State that concrete limitation before implementation.
 
 Prefer:
 

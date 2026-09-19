@@ -46,18 +46,16 @@ database or Docker service is required.
 
 ## Build
 
-On a fresh checkout, install frontend dependencies and generate the ignored
-artifacts before building:
+On a fresh checkout, install frontend dependencies before building:
 
 ```bash
 npm --prefix web ci
-make typegen
 make build
 ```
 
-The binary is written to `dist/grim`. `make build` compiles `web/dist/` first,
-then embeds it in the Go binary. Install it in a directory on your `PATH`, for
-example:
+The binary is written to `dist/grim`. `make build` generates the TypeScript API
+types, compiles `web/dist/`, then embeds it in the Go binary. Install it in a
+directory on your `PATH`, for example:
 
 ```bash
 install -m 0755 dist/grim "$HOME/.local/bin/grim"

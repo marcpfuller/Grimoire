@@ -18,6 +18,11 @@ Before proposing an abstraction:
 4. Confirm that extraction removes meaningful duplication or creates a stable seam
    required by the new feature.
 
+Reuse or adapt an existing abstraction when it already provides the required data
+or mechanics. Do not introduce a parallel helper solely for a narrower result or a
+more convenient shape. Add one only when the existing path cannot be reused safely
+or correctly, and state that limitation before implementation.
+
 Keep logic local when it has one caller, is domain-specific, or is likely to change
 with that workflow.
 

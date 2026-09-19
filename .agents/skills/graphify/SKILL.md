@@ -1,11 +1,19 @@
 ---
 name: graphify
-description: Build, update, or query a Graphify knowledge graph for code, documents, papers, images, or media. Use when the user explicitly asks for Graphify, a knowledge graph, graph traversal, graph visualization, or a query against an existing graphify-out graph, or when the mandatory implementation workflow selects Graphify for material cross-file context. Do not activate for ordinary focused codebase questions.
+description: Build, update, or query a Graphify knowledge graph for code, documents, papers, images, or media. Use when the user explicitly asks for Graphify, a knowledge graph, graph traversal, graph visualization, or a query against an existing graphify-out graph; when gathering implementation context for non-Go code; or when the mandatory implementation workflow selects Graphify for material cross-file context. For Go source context, prefer gopls first and rg only as a fallback; do not activate Graphify unless explicitly requested or gopls plus rg cannot establish a material cross-package relationship.
 ---
 
 # Graphify Router
 
 Load only the runbook required by the request.
+
+## Go Context Escalation
+
+When considering Graphify for Go source context without an explicit Graphify
+request, first use the `gopls` MCP server for semantic navigation and `rg` only
+as its text-search fallback. Use Graphify only if those results do not establish
+a material cross-package relationship. For non-Go code, pair Graphify's focused
+graph query with `rg` to verify the relevant source text.
 
 ## Route the Operation
 
@@ -37,8 +45,10 @@ Common code-only commands:
 ```
 
 The scripts keep full logs under `.context/graphify` and emit concise status or
-bounded query output. Load the longer references only when the requested operation
-cannot be represented by these interfaces.
+bounded query output. `query-compact.sh` refreshes a standard
+`graphify-out/graph.json` through `ensure-code-graph.sh` before traversal; use
+`--no-refresh` only for an intentional immutable or custom graph. Load the longer
+references only when the requested operation cannot be represented by these interfaces.
 
 ## Installation Boundary
 
@@ -49,7 +59,10 @@ is available; never use `--break-system-packages`.
 
 ## Context and Cost Discipline
 
-- For focused code questions that local search answers, do not invoke Graphify.
+- For Go source context, do not invoke Graphify until the gopls-first route and its
+  rg fallback are insufficient or Graphify is explicitly requested.
+- For non-Go implementation context, use Graphify plus `rg`; use `rg` to verify the
+  exact source text represented by graph results.
 - For an existing graph, load only the query runbook.
 - For a code-only corpus, use deterministic AST extraction and skip semantic
   extraction.

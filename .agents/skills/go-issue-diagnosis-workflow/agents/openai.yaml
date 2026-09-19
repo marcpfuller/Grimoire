@@ -1,0 +1,4 @@
+interface:
+  display_name: "Go Issue Diagnosis Workflow"
+  short_description: "Diagnose Go issues before implementing fixes"
+  default_prompt: "Use $go-issue-diagnosis-workflow to gather issue context, prove the root cause, and hand an authorized fix to the Go implementation workflow."

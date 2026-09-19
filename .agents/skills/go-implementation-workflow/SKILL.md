@@ -25,8 +25,29 @@ Mockery v2 through `go tool mockery`.
 
 ## Gate 1: Focused Source Context
 
+When `$go-issue-diagnosis-workflow` provides a diagnosis handoff in the current
+turn, reuse its issue context and causal evidence. Do not repeat GitHub lookup or
+root-cause diagnosis. Continue with the local source inspection required below.
+
+Unless an active diagnosis handoff already satisfies the issue read, invoke
+`$github-issue-context` before inspecting source for a task that identifies a
+GitHub issue number or URL. Reuse its result and safety handling rather than
+running another issue lookup.
+
 Always inspect the relevant local implementations, complete type definitions,
 interfaces, callers, tests, configuration, and error paths before editing.
+Before proposing a new function or helper, search for existing functions that
+provide the same data or mechanics and inspect their callers.
+
+For Go source context, use `gopls` first for workspace symbols, definitions,
+implementations, references, call hierarchy, types, and diagnostics. Use `rg`
+only for non-Go artifacts, exact literals, generated files, or when `gopls`
+cannot answer; verify any Go symbol found that way with `gopls` before relying on
+it. Do not begin a Go-code investigation with a broad `rg` search when `gopls`
+can identify the relevant symbol or callers. Do not select Graphify for routine
+Go context. Escalate to Graphify only when the user explicitly requests it or
+the combined `gopls` and `rg` evidence cannot answer a material cross-package
+relationship.
 
 Then select the smallest dependency-context path that answers the task:
 
@@ -37,10 +58,10 @@ Then select the smallest dependency-context path that answers the task:
    gate; do not repeat its source or graph work.
 2. If focused local search establishes the behavior, record dependency analysis as
    not applicable with one sentence.
-3. For a broad local cross-file question, invoke `$graphify`, run its code-graph
-   ensure script, then use its compact query script with exact source symbols and a
-   bounded budget. Do not load Graphify build/update references for this routine
-   path.
+3. For a broad local Go cross-file question that remains unresolved after the
+   `gopls` plus `rg` route above, invoke `$graphify`, run its code-graph ensure
+   script, then use its compact query script with exact source symbols and a bounded
+   budget. Do not load Graphify build/update references for this escalation path.
 4. If behavior depends on undocumented third-party internals, invoke `$opensrc` for
    the exact project-selected version.
 5. If the task needs a relationship graph across dependency internals, invoke
@@ -69,6 +90,9 @@ migration, rollout, and rollback.
   answers.
 - Use repository evidence to settle technical details that do not require a product
   choice.
+- A plan that adds a function or helper must name the closest existing API and
+  explain why reuse or adaptation is insufficient. Do not settle the plan on a
+  narrower return type or more convenient shape alone.
 - If no material decision remains, mark the plan settled and continue without a
   redundant question.
 - If a material decision remains, invoke `$grill-me`. Ask one question at a time,
@@ -114,6 +138,7 @@ Run focused checks while iterating. Run the full applicable suite once at handof
 go fmt ./...
 golangci-lint run ./...
 go test -race -cover ./...
+govulncheck ./...
 ```
 
 For concise output, run
