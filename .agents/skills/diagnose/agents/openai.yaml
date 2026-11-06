@@ -1,0 +1,4 @@
+interface:
+  display_name: "Diagnose Root Causes"
+  short_description: "Find and prove root causes with a tight loop"
+  default_prompt: "Use $diagnose to build a tight reproduction loop, falsify hypotheses, and prove the root cause of this failure."

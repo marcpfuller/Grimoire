@@ -1,0 +1,4 @@
+interface:
+  display_name: "Security Standards"
+  short_description: "Secure sensitive application trust boundaries"
+  default_prompt: "Use $security-standards to threat-model and secure this trust boundary."

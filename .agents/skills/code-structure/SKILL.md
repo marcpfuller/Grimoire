@@ -1,9 +1,9 @@
 ---
 name: code-structure
-description: Design or refactor Go package boundaries when multiple workflows duplicate operational mechanics or a new feature shares established mechanics. Use for real cross-caller duplication and service-boundary decisions; do not activate for single-use logic or cosmetic reorganization.
+description: Design or refactor module and package boundaries when multiple workflows duplicate operational mechanics or a feature needs a stable seam. Use for real cross-caller duplication and responsibility-boundary decisions; do not activate for single-use logic or cosmetic reorganization.
 ---
 
-# Go Code Structure
+# Code Structure
 
 Separate domain orchestration from reusable mechanics without introducing layers
 that the codebase does not need.
@@ -17,6 +17,11 @@ Before proposing an abstraction:
 3. Separate domain policy from operational mechanics.
 4. Confirm that extraction removes meaningful duplication or creates a stable seam
    required by the new feature.
+
+Reuse or adapt an existing abstraction when it already provides the required data
+or mechanics. Do not introduce a parallel helper solely for a narrower result or a
+more convenient shape. Add one only when the existing path cannot be reused safely
+or correctly, and state that limitation before implementation.
 
 Keep logic local when it has one caller, is domain-specific, or is likely to change
 with that workflow.
@@ -41,40 +46,18 @@ Reusable mechanics own:
 
 Do not move policy into a generic service merely to shorten a caller.
 
-## Go API Shape
+## Language Profile
 
-- Put the abstraction in the package that owns the behavior, not a generic
-  `utils` package.
-- Accept explicit typed inputs and return typed results.
-- Define interfaces at the consumer boundary when substitution is required.
-- Keep interfaces narrow and driven by actual callers.
-- Return or wrap errors with operation context; do not swallow them.
-- Avoid hidden global state and package initialization side effects.
+Read only the profile matching the boundary being changed:
 
-Example:
+- For Go, read [references/go.md](references/go.md).
+- For Python or Django, read
+  [references/python-django.md](references/python-django.md).
+- For a boundary that materially spans both, read both profiles.
 
-```go
-type CommandStore interface {
-	CreateCommand(ctx context.Context, input CreateCommandInput) (Command, error)
-}
-
-type Recorder struct {
-	store CommandStore
-}
-
-func (r *Recorder) Record(ctx context.Context, input RecordInput) (Command, error) {
-	if err := validateRecord(input); err != nil {
-		return Command{}, err
-	}
-	cmd, err := r.store.CreateCommand(ctx, toCreateInput(input))
-	if err != nil {
-		return Command{}, fmt.Errorf("create command: %w", err)
-	}
-	return cmd, nil
-}
-```
-
-The caller retains validation and workflow policy; the store owns persistence.
+For another language, apply the shared workflow and inspect that project's existing
+conventions before proposing an idiomatic boundary. Do not force a profile from a
+different language onto it.
 
 ## Migration
 
@@ -83,7 +66,8 @@ The caller retains validation and workflow policy; the store owns persistence.
 3. Migrate one caller and verify it.
 4. Migrate remaining callers incrementally.
 5. Remove the old path only after every caller is covered.
-6. Re-run package tests, race checks where concurrency is involved, and lint.
+6. Re-run the project's focused tests, concurrency checks where applicable, and
+   lint or type checks.
 
 Avoid god services, speculative interfaces, generic parameter bags, import cycles,
 and broad refactors that mix behavior changes with file movement.

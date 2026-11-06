@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub PR Context"
+  short_description: "Read authoritative GitHub PR context"
+  default_prompt: "Use $github-pr-context to read the referenced pull request and its current Copilot review feedback before continuing."

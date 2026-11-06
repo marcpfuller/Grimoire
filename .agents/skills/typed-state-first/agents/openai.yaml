@@ -1,0 +1,4 @@
+interface:
+  display_name: "Typed State First"
+  short_description: "Prefer authoritative typed state over loose data"
+  default_prompt: "Use $typed-state-first to find the authoritative typed source before reading loose metadata."

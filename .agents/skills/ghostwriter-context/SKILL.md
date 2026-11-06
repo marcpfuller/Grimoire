@@ -1,16 +1,32 @@
 ---
 name: ghostwriter-context
-description: Gather focused, revision-pinned context from the related Ghostwriter repository for Grimoire implementation, debugging, review, or compatibility work that touches internal/ghostwriter, internal/sync, GraphQL operations, service-token authentication, oplogs, or the Grimoire-Ghostwriter data contract. Use during Gate 1 of go-implementation-workflow; do not use for tasks whose behavior is fully local to Grimoire.
+description: Gather focused, revision-pinned Ghostwriter context for Grimoire or Faultline work that depends on the Ghostwriter contract. Use during Gate 1 of implementation-workflow only from a Grimoire or Faultline workspace; never use while working directly in Ghostwriter.
 ---
 
 # Ghostwriter Context
 
-Supply first-party Ghostwriter evidence to the Grimoire implementation workflow.
-Keep the Ghostwriter checkout read-only.
+Supply first-party Ghostwriter evidence to a Grimoire or Faultline implementation
+workflow. Keep the external Ghostwriter checkout read-only.
+
+## Applicability Gate
+
+Decide the repository boundary before resolving a source checkout or graph:
+
+- Invoke this skill only when the active workspace is Grimoire or Faultline **and**
+  the requested behavior depends on Ghostwriter code or its data contract.
+- When the active workspace is Ghostwriter, do not invoke this skill. Inspect the
+  local Ghostwriter workspace with the available language server and focused search;
+  do not resolve `GHOSTWRITER_REPO`, query a Ghostwriter graph, or inspect an
+  external Ghostwriter checkout.
+- When the requested behavior is fully local to Grimoire or Faultline, do not invoke
+  this skill.
+
+Keywords such as GraphQL, service tokens, and Oplogs do not establish a
+cross-repository boundary by themselves.
 
 ## Establish the Source and Graph
 
-From the Grimoire repository root, run:
+From the active Grimoire or Faultline repository root, run:
 
 ```bash
 .agents/skills/ghostwriter-context/scripts/ensure-graph.sh
@@ -28,13 +44,13 @@ dirty, or ambiguous source tree.
 
 ## Gather Focused Evidence
 
-1. Derive one focused cross-repository question from the Grimoire call site and the
-   requested change.
+1. Derive one focused cross-repository question from the active Grimoire or
+   Faultline call site and the requested change.
 2. Run `.agents/skills/graphify/scripts/query-compact.sh` against the absolute
    `GRAPHIFY_GRAPH` emitted by the script. Form the query from exact Ghostwriter
-   symbols and vocabulary found at the Grimoire boundary; start with its default
-   800-token budget. Load `$graphify` query references only for advanced expansion,
-   path, explain, or result-feedback flows.
+   symbols and vocabulary found at the Grimoire or Faultline boundary; start with
+   its default 800-token budget. Load `$graphify` query references only for advanced
+   expansion, path, explain, or result-feedback flows.
 3. Verify important graph paths against the Ghostwriter source files and tests at
    `GRAPHIFY_SOURCE_ROOT`. Graph edges are static evidence, not runtime proof.
 4. Read only documentation directly relevant to the contract under investigation.

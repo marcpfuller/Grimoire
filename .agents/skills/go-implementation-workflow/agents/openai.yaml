@@ -1,4 +1,0 @@
-interface:
-  display_name: "Go Implementation Workflow"
-  short_description: "Run the four implementation gates efficiently"
-  default_prompt: "Use $go-implementation-workflow to gather context, settle the plan, implement with TDD, and verify this change."

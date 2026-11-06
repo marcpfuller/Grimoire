@@ -1,4 +1,4 @@
 interface:
   display_name: "Ghostwriter Context"
   short_description: "Gather versioned Ghostwriter integration context"
-  default_prompt: "Use $ghostwriter-context to gather focused, versioned Ghostwriter context for this Grimoire task."
+  default_prompt: "Use $ghostwriter-context to gather focused, versioned Ghostwriter context for this Grimoire or Faultline task."

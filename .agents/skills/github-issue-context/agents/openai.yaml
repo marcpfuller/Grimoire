@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Issue Context"
+  short_description: "Read authoritative GitHub issue context"
+  default_prompt: "Use $github-issue-context to read and summarize the referenced GitHub issue before continuing."

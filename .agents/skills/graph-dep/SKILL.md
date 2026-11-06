@@ -39,7 +39,7 @@ Do not continue without an existing absolute `source_root` and exact provenance.
 
 ## Ensure the Graph
 
-From the Grimoire root, run:
+From the project root, run:
 
 ```bash
 .agents/skills/graph-dep/scripts/ensure-dependency-graph.sh \
@@ -95,4 +95,4 @@ Do not paste verbose build logs or the full graph report.
 - Graphify scripts own deterministic build/reuse, locking, diagnostics, bounded
   traversal, and logs.
 - `$graph-dep` owns sequencing, provenance, source immutability, verification, and
-  the combined handoff to `go-implementation-workflow`.
+  the combined handoff to `$implementation-workflow`.

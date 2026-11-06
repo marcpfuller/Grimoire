@@ -1,0 +1,4 @@
+interface:
+  display_name: "Testing Standards"
+  short_description: "Write focused tests with risk-based verification"
+  default_prompt: "Use $testing-standards to test this behavior with focused TDD and risk-based verification."

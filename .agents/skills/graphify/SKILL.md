@@ -1,11 +1,18 @@
 ---
 name: graphify
-description: Build, update, or query a Graphify knowledge graph for code, documents, papers, images, or media. Use when the user explicitly asks for Graphify, a knowledge graph, graph traversal, graph visualization, or a query against an existing graphify-out graph, or when the mandatory implementation workflow selects Graphify for material cross-file context. Do not activate for ordinary focused codebase questions.
+description: Build, update, or query a Graphify knowledge graph for code, documents, papers, images, or media. Use when the user explicitly asks for Graphify, graph traversal, graph visualization, or an existing graph query, or when the implementation workflow selects Graphify because semantic navigation plus focused text search cannot establish a material cross-file relationship.
 ---
 
 # Graphify Router
 
 Load only the runbook required by the request.
+
+## Source Context Escalation
+
+Without an explicit Graphify request, first use semantic language tooling when it is
+available and focused `rg` searches as a text fallback. Use Graphify only when those
+results do not establish a material cross-file or cross-package relationship. Verify
+important graph results against the relevant source text.
 
 ## Route the Operation
 
@@ -37,8 +44,10 @@ Common code-only commands:
 ```
 
 The scripts keep full logs under `.context/graphify` and emit concise status or
-bounded query output. Load the longer references only when the requested operation
-cannot be represented by these interfaces.
+bounded query output. `query-compact.sh` refreshes a standard
+`graphify-out/graph.json` through `ensure-code-graph.sh` before traversal; use
+`--no-refresh` only for an intentional immutable or custom graph. Load the longer
+references only when the requested operation cannot be represented by these interfaces.
 
 ## Installation Boundary
 
@@ -49,7 +58,10 @@ is available; never use `--break-system-packages`.
 
 ## Context and Cost Discipline
 
-- For focused code questions that local search answers, do not invoke Graphify.
+- For source context, do not invoke Graphify until available semantic tooling and
+  focused text search are insufficient or Graphify is explicitly requested.
+- Use `rg` or another focused source reader to verify the exact text represented by
+  important graph results.
 - For an existing graph, load only the query runbook.
 - For a code-only corpus, use deterministic AST extraction and skip semantic
   extraction.
